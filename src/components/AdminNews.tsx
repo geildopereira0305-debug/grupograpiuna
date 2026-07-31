@@ -4,6 +4,7 @@ import { db } from '../firebase';
 import { Plus, Trash2, Edit2, X, Image, Youtube, Link as LinkIcon, RefreshCw } from 'lucide-react';
 import { ImageUploadField } from './ImageUploadField';
 import { handleFirestoreError, OperationType } from '../lib/firestore-errors';
+import { NEWS_CATEGORIES } from '../lib/utils';
 import { NewsMediaItem } from '../types';
 
 export const AdminNews = () => {
@@ -174,7 +175,7 @@ export const AdminNews = () => {
                     onChange={(e) => setFormData({...formData, category: e.target.value})}
                     className="w-full border border-gray-200 rounded-xl px-4 py-3 focus:outline-none focus:border-red-600"
                   >
-                    {['Política', 'Cidade', 'Economia', 'Polícia', 'Esporte', 'Sul da Bahia', 'Brasil', 'Opinião'].map(c => <option key={c} value={c}>{c}</option>)}
+                    {NEWS_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
                   </select>
                 </div>
                 <div>

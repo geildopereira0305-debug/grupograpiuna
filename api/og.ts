@@ -32,6 +32,24 @@ function extractDocId(param: string): string {
   return idx === -1 ? param : param.slice(idx + 1);
 }
 
+/**
+ * Prepara a imagem do preview. Em URLs do Cloudinary injeta uma transformação
+ * que entrega exatamente 1200x630 em JPEG: o WhatsApp ignora previews em
+ * formatos modernos (webp/avif) ou muito pesados, e espera que as dimensões
+ * declaradas em og:image:width/height batam com a imagem real.
+ * Sem imagem cadastrada, cai no logo do site.
+ */
+function buildOgImage(url: string, siteUrl: string): string {
+  if (!url) return `${siteUrl}/assets/grupograpiuna.png`;
+  if (url.includes('/image/upload/')) {
+    return url.replace(
+      '/image/upload/',
+      '/image/upload/c_fill,g_auto,w_1200,h_630,q_auto:good,f_jpg/',
+    );
+  }
+  return url;
+}
+
 export default async function handler(req: any, res: any) {
   const id = String(req.query?.id ?? '').trim();
 
@@ -63,7 +81,7 @@ export default async function handler(req: any, res: any) {
     const fields = data.fields ?? {};
 
     const title       = escapeHtml(getStringValue(fields.title));
-    const imageUrl    = escapeHtml(getStringValue(fields.imageUrl));
+    const imageUrl    = escapeHtml(buildOgImage(getStringValue(fields.imageUrl), SITE_URL));
     const category    = escapeHtml(getStringValue(fields.category));
     const rawContent  = getStringValue(fields.content);
 

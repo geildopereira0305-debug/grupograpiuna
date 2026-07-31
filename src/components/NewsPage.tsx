@@ -6,10 +6,10 @@ import { AdBanner } from './AdBanner';
 import { StoriesStrip } from './StoriesStrip';
 import { collection, query, orderBy, onSnapshot, where } from 'firebase/firestore';
 import { db } from '../firebase';
-import { newsHref } from '../lib/utils';
+import { newsHref, NEWS_CATEGORIES } from '../lib/utils';
 
 export const NewsPage = () => {
-  const categories = ['Todas', 'Política', 'Cidade', 'Economia', 'Polícia', 'Esporte', 'Sul da Bahia', 'Brasil', 'Opinião'];
+  const categories = ['Todas', ...NEWS_CATEGORIES];
   const [news, setNews] = useState<any[]>([]);
   const [selectedCategory, setSelectedCategory] = useState('Todas');
   const [searchTerm, setSearchTerm] = useState('');

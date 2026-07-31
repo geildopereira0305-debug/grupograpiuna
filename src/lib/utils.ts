@@ -6,6 +6,25 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 /**
+ * Categorias editoriais das notícias. Fonte única — usada no formulário do
+ * admin e nos filtros do portal, para as duas listas não divergirem.
+ */
+export const NEWS_CATEGORIES = [
+  'Política',
+  'Cidade',
+  'Economia',
+  'Polícia',
+  'Violência',
+  'Acidente',
+  'Saúde',
+  'Esporte',
+  'Sul da Bahia',
+  'Bahia',
+  'Brasil',
+  'Opinião',
+] as const;
+
+/**
  * Converte um texto em um slug seguro para URL.
  * `normalize("NFD")` decompõe os acentos em marcas combinantes, que em seguida
  * são descartadas pelo filtro que mantém apenas letras, números e hífens.
