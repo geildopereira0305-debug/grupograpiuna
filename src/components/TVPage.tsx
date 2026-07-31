@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
 import Hls from 'hls.js';
 import { motion } from 'motion/react';
-import { Play, Calendar, MessageSquare, Share2, Send, LogIn, Tv, Minimize2, Maximize, Maximize2 } from 'lucide-react';
+import { Play, Calendar, MessageSquare, Share2, Send, LogIn, Tv, Minimize2, Maximize, Maximize2, Trash2 } from 'lucide-react';
 import { AdBanner } from './AdBanner';
-import { collection, query, orderBy, onSnapshot, addDoc, serverTimestamp, limit, doc } from 'firebase/firestore';
+import { collection, query, orderBy, onSnapshot, addDoc, serverTimestamp, limit, doc, deleteDoc, writeBatch } from 'firebase/firestore';
+import { useAuth } from '../hooks/useAuth';
 import { TVChannel } from '../types';
 import { onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
 import { db, auth, loginWithGoogle } from '../firebase';
@@ -51,6 +52,7 @@ export const TVPage = () => {
   const [messages, setMessages] = useState<any[]>([]);
   const [newMessage, setNewMessage] = useState('');
   const [user, setUser] = useState<FirebaseUser | null>(null);
+  const { isAdmin } = useAuth();
 
   const chatEndRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -258,6 +260,29 @@ export const TVPage = () => {
     } catch {}
   };
 
+  /** Exclui uma mensagem — admin apaga qualquer uma; usuário só as próprias */
+  const handleDeleteMessage = async (id: string) => {
+    try {
+      await deleteDoc(doc(db, 'live_chat', id));
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, 'live_chat');
+    }
+  };
+
+  /** Limpa o chat (somente admin). Remove as mensagens carregadas (últimas 50). */
+  const handleClearChat = async () => {
+    const ids = messages.map((m) => m.id).filter(Boolean);
+    if (ids.length === 0) return;
+    if (!window.confirm(`Apagar ${ids.length} mensagem(ns) do chat? Esta ação não pode ser desfeita.`)) return;
+    try {
+      const batch = writeBatch(db);
+      ids.forEach((id) => batch.delete(doc(db, 'live_chat', id)));
+      await batch.commit();
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, 'live_chat');
+    }
+  };
+
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newMessage.trim() || !user) return;
@@ -435,21 +460,44 @@ export const TVPage = () => {
                 <h3 className="font-bold flex items-center gap-2 uppercase text-xs tracking-widest">
                   <MessageSquare size={16} className="text-red-600" /> Chat Ao Vivo
                 </h3>
-                {user && (
-                  <div className="flex items-center gap-2">
-                    <img src={user.photoURL || ''} className="w-5 h-5 rounded-full" alt="" />
-                    <span className="text-[10px] text-gray-400 font-bold uppercase">{user.displayName?.split(' ')[0]}</span>
-                  </div>
-                )}
+                <div className="flex items-center gap-3">
+                  {isAdmin && messages.length > 0 && (
+                    <button
+                      onClick={handleClearChat}
+                      title="Apagar todas as mensagens"
+                      className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-widest text-gray-500 hover:text-red-500 transition-colors"
+                    >
+                      <Trash2 size={12} /> Limpar
+                    </button>
+                  )}
+                  {user && (
+                    <div className="flex items-center gap-2">
+                      <img src={user.photoURL || ''} className="w-5 h-5 rounded-full" alt="" />
+                      <span className="text-[10px] text-gray-400 font-bold uppercase">{user.displayName?.split(' ')[0]}</span>
+                    </div>
+                  )}
+                </div>
               </div>
 
               <div className="flex-1 p-4 overflow-y-auto space-y-3 text-sm scrollbar-thin scrollbar-thumb-gray-800">
-                {messages.length > 0 ? messages.map((msg, i) => (
-                  <div key={msg.id || i} className="flex gap-2 animate-in fade-in slide-in-from-bottom-2 duration-300">
-                    <span className="font-bold text-red-500 shrink-0">{msg.userName}:</span>
-                    <span className="text-gray-300 break-words">{msg.text}</span>
-                  </div>
-                )) : (
+                {messages.length > 0 ? messages.map((msg, i) => {
+                  const canDelete = !!msg.id && (isAdmin || (!!user && msg.userId === user.uid));
+                  return (
+                    <div key={msg.id || i} className="group flex gap-2 items-start animate-in fade-in slide-in-from-bottom-2 duration-300">
+                      <span className="font-bold text-red-500 shrink-0">{msg.userName}:</span>
+                      <span className="text-gray-300 break-words flex-1 min-w-0">{msg.text}</span>
+                      {canDelete && (
+                        <button
+                          onClick={() => handleDeleteMessage(msg.id)}
+                          title="Excluir mensagem"
+                          className="opacity-0 group-hover:opacity-100 text-gray-600 hover:text-red-500 transition-all shrink-0 mt-0.5"
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      )}
+                    </div>
+                  );
+                }) : (
                   <div className="h-full flex flex-col items-center justify-center text-gray-600 text-center px-4">
                     <MessageSquare size={28} className="mb-2 opacity-20" />
                     <p className="text-xs">Seja o primeiro a comentar!</p>

@@ -86,14 +86,15 @@ const fetchInstagram = async (): Promise<Instagram> => {
 };
 
 // Compat: o tracker antigo gravava chaves dotted ("dailyStats.2026-05-02") como
-// campos literais no topo do documento. Esta função une o mapa aninhado novo
-// com qualquer chave legada do tipo `${prefix}.${sub}` para não perder histórico.
+// campos literais no topo do documento; o atual grava mapas aninhados. As duas
+// gravações cobrem períodos diferentes, então os valores são SOMADOS — usar
+// apenas um dos lados descartaria parte do histórico.
 const mergeNestedAndLegacy = (stats: any, prefix: string): Record<string, number> => {
   const merged: Record<string, number> = { ...((stats?.[prefix] as Record<string, number>) ?? {}) };
   for (const [k, v] of Object.entries(stats ?? {})) {
     if (k.startsWith(`${prefix}.`) && typeof v === 'number') {
       const subKey = k.slice(prefix.length + 1);
-      if (!(subKey in merged)) merged[subKey] = v;
+      merged[subKey] = (merged[subKey] ?? 0) + v;
     }
   }
   return merged;
@@ -282,6 +283,9 @@ export const AdminAnalytics = () => {
     { name: 'Desktop', value: desktop, color: '#2563eb' },
     { name: 'Mobile', value: mobile, color: '#ef4444' },
   ];
+  // Acessos contabilizados antes de o tracker passar a registrar o dispositivo:
+  // existem em totalAccesses, mas não têm como ser atribuídos a mobile/desktop.
+  const untrackedDevice = Math.max(0, (stats?.totalAccesses ?? 0) - (desktop + mobile));
 
   // ── Top Videos ────────────────────────────────────────────────────────────
   const videoData = videos.slice(0, 5).map(v => ({
@@ -424,6 +428,13 @@ export const AdminAnalytics = () => {
           <StatCard title="Acessos Mobile"     value={mobile}               icon={Smartphone} color="bg-orange-600" />
           <StatCard title="Acessos Desktop"    value={desktop}              icon={Monitor}    color="bg-indigo-600" />
         </div>
+        {untrackedDevice > 0 && (
+          <p className="text-[11px] text-gray-400 mt-3 leading-relaxed">
+            Mobile + Desktop = {(mobile + desktop).toLocaleString('pt-BR')}. Os outros{' '}
+            {untrackedDevice.toLocaleString('pt-BR')} acessos foram registrados antes de o site
+            passar a identificar o tipo de dispositivo, por isso não entram nessa divisão.
+          </p>
+        )}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">

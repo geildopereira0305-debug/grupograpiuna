@@ -1,23 +1,32 @@
 import React, { useState, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { Menu, X, Tv, Newspaper, Mic, Video, Info, LayoutDashboard, Eye, ShoppingBag } from 'lucide-react';
-import { cn } from '@/src/lib/utils';
+import { Menu, X, Tv, Newspaper, Mic, Video, Info, LayoutDashboard, ShoppingBag } from 'lucide-react';
+import { cn, newsHref } from '@/src/lib/utils';
 import { useAuth } from '../hooks/useAuth';
-import { doc, onSnapshot } from 'firebase/firestore';
+import { collection, query, orderBy, limit, onSnapshot } from 'firebase/firestore';
 import { db } from '../firebase';
+
+type TickerItem = { id: string; title: string };
 
 export const Navbar = () => {
   const [isOpen, setIsOpen] = React.useState(false);
-  const [stats, setStats] = useState<any>(null);
+  const [headlines, setHeadlines] = useState<TickerItem[]>([]);
   const location = useLocation();
   const { user } = useAuth();
 
   useEffect(() => {
-    const unsubscribe = onSnapshot(doc(db, 'site_stats', 'global'), (doc) => {
-      if (doc.exists()) {
-        setStats(doc.data());
-      }
-    });
+    const q = query(collection(db, 'news'), orderBy('createdAt', 'desc'), limit(12));
+    const unsubscribe = onSnapshot(
+      q,
+      (snap) => {
+        setHeadlines(
+          snap.docs
+            .map((d) => ({ id: d.id, title: (d.data().title as string) ?? '' }))
+            .filter((n) => n.title),
+        );
+      },
+      () => setHeadlines([]),
+    );
     return () => unsubscribe();
   }, []);
 
@@ -32,20 +41,38 @@ export const Navbar = () => {
 
   return (
     <nav className="bg-white border-b border-gray-200 sticky top-0 z-50">
-      {/* Top Stats Bar */}
+      {/* Barra superior: status ao vivo + ticker com as últimas notícias */}
       <div className="bg-gray-900 text-white py-1.5 px-4 sm:px-6 lg:px-8">
-        <div className="max-w-7xl mx-auto flex justify-between items-center text-[10px] font-bold uppercase tracking-widest">
-          <div className="flex items-center gap-4">
+        <div className="max-w-7xl mx-auto flex items-center gap-4 text-[10px] font-bold uppercase tracking-widest">
+          <Link to="/tv" className="flex items-center gap-2 shrink-0 hover:opacity-80 transition-opacity">
             <span className="text-red-500">AO VIVO:</span>
-              <span className="animate-pulse flex items-center gap-1">
-              <div className="w-1.5 h-1.5 bg-red-500 rounded-full"></div>
-              TV GRAPIÚNA AO VIVO
+            <span className="animate-pulse flex items-center gap-1">
+              <span className="w-1.5 h-1.5 bg-red-500 rounded-full" />
+              <span className="hidden sm:inline">TV GRAPIÚNA AO VIVO</span>
             </span>
-          </div>
-          {stats && (
-            <div className="flex items-center gap-2 text-gray-400">
-              <Eye size={12} className="text-red-500" />
-              <span>{stats.totalAccesses?.toLocaleString('pt-BR')} ACESSOS AO PORTAL</span>
+          </Link>
+
+          {headlines.length > 0 && (
+            <div className="relative flex-1 min-w-0 overflow-hidden">
+              {/* Fade na borda para o texto não "cortar" seco ao sair */}
+              <div className="pointer-events-none absolute inset-y-0 left-0 w-8 z-10 bg-gradient-to-r from-gray-900 to-transparent" />
+              <div
+                className="flex w-max gg-ticker"
+                style={{ animationDuration: `${Math.max(25, headlines.length * 5)}s` }}
+              >
+                {[...headlines, ...headlines].map((item, i) => (
+                  <Link
+                    key={`${item.id}-${i}`}
+                    to={newsHref(item.title, item.id)}
+                    aria-hidden={i >= headlines.length}
+                    tabIndex={i >= headlines.length ? -1 : undefined}
+                    className="flex items-center gap-2 px-4 text-gray-300 hover:text-white transition-colors"
+                  >
+                    <span className="w-1 h-1 bg-red-500 rounded-full shrink-0" />
+                    <span className="whitespace-nowrap">{item.title}</span>
+                  </Link>
+                ))}
+              </div>
             </div>
           )}
         </div>

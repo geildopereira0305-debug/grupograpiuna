@@ -52,8 +52,12 @@ service cloud.firestore {
         );
     }
 
+    // O exists() é obrigatório: sem ele, get() em usuário sem documento em
+    // users/{uid} retorna null e o .data lança erro, derrubando a avaliação
+    // inteira da regra (era o que impedia visitantes logados de comentar).
     function isEditor() {
       return isAuthenticated() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
         (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'editor']);
     }
 
@@ -106,7 +110,9 @@ service cloud.firestore {
     }
 
     // Rules
-    match /news/{newsId=**} {
+    // Sem wildcard recursivo (=**) de propósito: ele também capturava a
+    // subcoleção de comentários e exigia admin/editor para escrever nela.
+    match /news/{newsId} {
       allow read: if true;
       allow create, update, delete: if isAdmin() || isEditor();
     }

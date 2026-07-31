@@ -19,6 +19,23 @@
   scrollbar-width: none;
 }
 
+/* Ticker de notícias da barra superior — a lista é duplicada no DOM e
+   deslocada em -50%, o que faz o loop emendar sem salto.
+   A duração vem por inline style (proporcional à quantidade de manchetes). */
+@keyframes gg-ticker-scroll {
+  from { transform: translateX(0); }
+  to   { transform: translateX(-50%); }
+}
+.gg-ticker {
+  animation-name: gg-ticker-scroll;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+  will-change: transform;
+}
+.gg-ticker:hover {
+  animation-play-state: paused;
+}
+
 .markdown-body p,
 .markdown-body ul,
 .markdown-body ol {
