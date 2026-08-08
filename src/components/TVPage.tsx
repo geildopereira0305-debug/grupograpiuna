@@ -555,7 +555,7 @@ export const TVPage = () => {
               );
             }
             return (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
                 {dayItems.map((prog) => {
                   const isLive = prog.id === liveId;
                   // legado sem duração → mostra o horário antigo em vez de 00:00
@@ -593,42 +593,42 @@ export const TVPage = () => {
                           />
                         ) : (
                           <div className="w-full h-full flex items-center justify-center text-gray-600">
-                            <Calendar size={26} />
+                            <Calendar size={20} />
                           </div>
                         )}
 
                         {/* Horário sobreposto */}
-                        <span className="absolute bottom-2 left-2 font-mono font-bold text-[11px] bg-black/75 text-white px-2 py-0.5 rounded">
+                        <span className="absolute bottom-1.5 left-1.5 font-mono font-bold text-[10px] bg-black/75 text-white px-1.5 py-0.5 rounded">
                           {timeLabel}
                         </span>
 
                         {isLive && (
-                          <span className="absolute top-2 right-2 flex items-center gap-1 bg-red-600 text-white text-[9px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full">
-                            <span className="w-1.5 h-1.5 bg-white rounded-full animate-pulse" />
-                            No ar agora
+                          <span className="absolute top-1.5 right-1.5 flex items-center gap-1 bg-red-600 text-white text-[8px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full">
+                            <span className="w-1 h-1 bg-white rounded-full animate-pulse" />
+                            No ar
                           </span>
                         )}
 
                         {/* Play no hover — só quando há vídeo para tocar */}
                         {prog.youtubeUrl && (
                           <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                            <div className="w-11 h-11 bg-red-600 rounded-full flex items-center justify-center shadow-xl">
-                              <Play size={18} fill="white" color="white" className="ml-0.5" />
+                            <div className="w-9 h-9 bg-red-600 rounded-full flex items-center justify-center shadow-xl">
+                              <Play size={15} fill="white" color="white" className="ml-0.5" />
                             </div>
                           </div>
                         )}
                       </div>
 
                       {/* Informações */}
-                      <div className={`p-3 transition-colors ${isLive ? 'bg-red-600/10' : 'bg-gray-800'}`}>
+                      <div className={`p-2.5 transition-colors ${isLive ? 'bg-red-600/10' : 'bg-gray-800'}`}>
                         {prog.category && (
-                          <p className="text-[10px] text-red-500 uppercase tracking-widest font-bold mb-1">
+                          <p className="text-[9px] text-red-500 uppercase tracking-widest font-bold mb-0.5 truncate">
                             {prog.category}
                           </p>
                         )}
-                        <h3 className="text-sm font-bold leading-snug line-clamp-2">{prog.title}</h3>
+                        <h3 className="text-xs font-bold leading-snug line-clamp-2">{prog.title}</h3>
                         {prog.host && (
-                          <p className="text-gray-400 text-xs line-clamp-1 mt-1">Com {prog.host}</p>
+                          <p className="text-gray-400 text-[10px] line-clamp-1 mt-0.5">Com {prog.host}</p>
                         )}
                       </div>
                     </button>

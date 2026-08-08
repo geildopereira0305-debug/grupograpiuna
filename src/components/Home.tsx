@@ -7,10 +7,12 @@ import { collection, query, orderBy, limit, onSnapshot, updateDoc, doc, incremen
 import { db } from '../firebase';
 import { YouTubeVideo } from '../types';
 import { newsHref } from '../lib/utils';
+import { handleFirestoreError, OperationType } from '../lib/firestore-errors';
 
 export const Home = () => {
   const [latestNews, setLatestNews] = useState<any[]>([]);
   const [latestVideos, setLatestVideos] = useState<YouTubeVideo[]>([]);
+  const [videosLoading, setVideosLoading] = useState(true);
 
   const incrementVideoViews = async (video: YouTubeVideo) => {
     try {
@@ -32,9 +34,18 @@ export const Home = () => {
 
   useEffect(() => {
     const q = query(collection(db, 'youtube_videos'), orderBy('publishedAt', 'desc'), limit(4));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      setLatestVideos(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as YouTubeVideo)));
-    });
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        setLatestVideos(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as YouTubeVideo)));
+        setVideosLoading(false);
+      },
+      (error) => {
+        // Sem este handler a falha era silenciosa e a seção ficava em skeleton eterno
+        handleFirestoreError(error, OperationType.LIST, 'youtube_videos');
+        setVideosLoading(false);
+      },
+    );
     return () => unsubscribe();
   }, []);
 
@@ -176,6 +187,14 @@ export const Home = () => {
             <Link to="/tv" className="text-gray-400 font-bold text-sm hover:text-red-600 transition-colors">VER TODOS</Link>
           </div>
 
+          {!videosLoading && latestVideos.length === 0 && (
+            <div className="py-12 text-center border border-dashed border-gray-800 rounded-2xl">
+              <Youtube size={30} className="mx-auto mb-3 text-gray-700" />
+              <p className="text-gray-500 text-sm font-bold">Nenhum vídeo cadastrado ainda.</p>
+              <p className="text-gray-600 text-xs mt-1">Adicione vídeos em Admin → Vídeos.</p>
+            </div>
+          )}
+
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-8">
             {latestVideos.length > 0 ? latestVideos.map((video) => (
               <Link 
@@ -185,11 +204,18 @@ export const Home = () => {
                 onClick={() => incrementVideoViews(video)}
               >
                 <div className="relative overflow-hidden rounded-xl mb-4 aspect-video border border-gray-800">
-                  <img 
-                    src={video.thumbnailUrl} 
-                    alt={video.title} 
+                  <img
+                    src={video.thumbnailUrl}
+                    alt={video.title}
                     className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110"
                     referrerPolicy="no-referrer"
+                    onError={(e) => {
+                      // maxresdefault não existe para todo vídeo; hqdefault sempre existe
+                      const img = e.currentTarget;
+                      if (img.src.includes('maxresdefault')) {
+                        img.src = img.src.replace('maxresdefault', 'hqdefault');
+                      }
+                    }}
                   />
                   <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
                     <div className="w-12 h-12 bg-red-600 rounded-full flex items-center justify-center shadow-xl">
@@ -209,7 +235,7 @@ export const Home = () => {
                   </div>
                 </div>
               </Link>
-            )) : (
+            )) : videosLoading ? (
               [1, 2, 3, 4].map((n) => (
                 <div key={n} className="animate-pulse">
                   <div className="bg-gray-900 aspect-video rounded-xl mb-4"></div>
@@ -217,7 +243,7 @@ export const Home = () => {
                   <div className="h-3 bg-gray-900 rounded w-1/4"></div>
                 </div>
               ))
-            )}
+            ) : null}
           </div>
         </div>
       </section>

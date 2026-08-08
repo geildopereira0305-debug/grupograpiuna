@@ -34,7 +34,7 @@ export const Navbar = () => {
     { name: 'Home', path: '/', icon: Info },
     { name: 'TV Grapiúna', path: '/tv', icon: Tv },
     { name: 'Notícias', path: '/noticias', icon: Newspaper },
-    { name: 'CANAIS AO VIVO', path: '/aovivo', icon: Video },
+    { name: 'EVENTOS AO VIVO', path: '/aovivo', icon: Video },
     { name: 'Podcasts', path: '/podcasts', icon: Mic },
     { name: 'Loja', path: '/loja', icon: ShoppingBag },
   ];
