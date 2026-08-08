@@ -2,6 +2,9 @@ import React from 'react';
 import { motion } from 'motion/react';
 import { Download, BarChart3, Users, Globe, Mail } from 'lucide-react';
 
+/** Caminho do mídia kit. O arquivo deve estar em public/assets/midia-kit.pdf */
+const MIDIA_KIT_PDF = '/assets/midia-kit.pdf';
+
 export const MidiaKitPage = () => {
   return (
     <div className="bg-white min-h-screen">
@@ -12,9 +15,15 @@ export const MidiaKitPage = () => {
           <p className="text-xl opacity-90 max-w-2xl mx-auto mb-10">
             Conecte sua marca ao maior ecossistema de comunicação do Sul da Bahia.
           </p>
-          <button className="bg-white text-red-600 px-10 py-4 rounded-full font-bold text-lg hover:bg-gray-100 transition-all flex items-center gap-2 mx-auto shadow-xl">
+          {/* O arquivo fica em public/assets/ e é servido a partir da raiz do site.
+              O atributo download define o nome sugerido ao salvar. */}
+          <a
+            href={MIDIA_KIT_PDF}
+            download="Midia-Kit-Grupo-Grapiuna-2026.pdf"
+            className="bg-white text-red-600 px-10 py-4 rounded-full font-bold text-lg hover:bg-gray-100 transition-all inline-flex items-center gap-2 mx-auto shadow-xl"
+          >
             <Download size={20} /> BAIXAR PDF COMPLETO
-          </button>
+          </a>
         </div>
       </section>
 
