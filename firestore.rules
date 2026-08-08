@@ -72,7 +72,7 @@ service cloud.firestore {
 
     function isValidChatMessage(data) {
       return data.keys().hasAll(['text', 'userId', 'userName', 'createdAt']) &&
-             data.text is string && data.text.size() > 0 && data.text.size() < 500 &&
+             data.text is string && data.text.size() > 0 && data.text.size() <= 500 &&
              data.userId == request.auth.uid &&
              data.userName is string && data.userName.size() > 0 && data.userName.size() < 100 &&
              data.createdAt == request.time;
@@ -80,7 +80,7 @@ service cloud.firestore {
 
     function isValidComment(data) {
       return data.keys().hasAll(['text', 'userId', 'userName', 'createdAt']) &&
-             data.text is string && data.text.size() > 0 && data.text.size() < 500 &&
+             data.text is string && data.text.size() > 0 && data.text.size() <= 500 &&
              data.userId is string &&
              data.userName is string && data.userName.size() > 0 && data.userName.size() < 100 &&
              data.createdAt == request.time;
@@ -139,6 +139,13 @@ service cloud.firestore {
       allow create, update, delete: if isAdmin() || isEditor();
     }
 
+    // Configuração da transmissão ao vivo (doc único: 'current').
+    // Lida pela TVPage e gravada pelo painel em AdminVideos.
+    match /live_config/{configId=**} {
+      allow read: if true;
+      allow write: if isAdmin() || isEditor();
+    }
+
     match /live_chat/{messageId=**} {
       allow list: if true;
       allow get: if true;
@@ -159,9 +166,11 @@ service cloud.firestore {
     match /youtube_videos/{videoId=**} {
       allow read: if true;
       allow create, delete: if isAdmin() || isEditor();
-      allow update: if isAdmin() || isEditor() || 
+      // get('views', 0) é necessário porque o painel não inicializa o campo:
+      // em vídeo recém-criado, resource.data.views é null e null + 1 daria erro.
+      allow update: if isAdmin() || isEditor() ||
         (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['views']) &&
-         request.resource.data.views == resource.data.views + 1);
+         request.resource.data.views == resource.data.get('views', 0) + 1);
     }
 
     match /site_stats/{statId=**} {
