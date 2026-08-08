@@ -1,13 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
 import Hls from 'hls.js';
 import { motion } from 'motion/react';
-import { Play, Calendar, MessageSquare, Share2, Send, LogIn, Tv, Minimize2, Maximize, Maximize2, Trash2 } from 'lucide-react';
+import { Play, Calendar, Share2, Tv, Minimize2, Maximize, Maximize2 } from 'lucide-react';
 import { AdBanner } from './AdBanner';
-import { collection, query, orderBy, onSnapshot, addDoc, serverTimestamp, limit, doc, deleteDoc, writeBatch } from 'firebase/firestore';
-import { useAuth } from '../hooks/useAuth';
+import { collection, query, orderBy, onSnapshot, doc } from 'firebase/firestore';
 import { TVChannel } from '../types';
-import { onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
-import { db, auth, loginWithGoogle } from '../firebase';
+import { db } from '../firebase';
 import { ScheduleItem } from '../types';
 import { handleFirestoreError, OperationType } from '../lib/firestore-errors';
 import { findOnAir, computeDaySchedule } from '../lib/schedule';
@@ -49,24 +47,11 @@ export const TVPage = () => {
   const [selectedVideoStart, setSelectedVideoStart] = useState<number | null>(null);
   const [selectedDay, setSelectedDay] = useState<string>(TODAY_NAME);
 
-  const [messages, setMessages] = useState<any[]>([]);
-  const [newMessage, setNewMessage] = useState('');
-  const [user, setUser] = useState<FirebaseUser | null>(null);
-  const { isAdmin } = useAuth();
-
-  const chatEndRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<Hls | null>(null);
   const playerWrapperRef = useRef<HTMLDivElement>(null);
-  const isInitialMount = useRef(true);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const lastYtStateRef = useRef(-1); // último playerState reportado pelo iframe do YouTube
-
-  // ── Auth ──────────────────────────────────────────────────────────────────
-  useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (u) => setUser(u));
-    return () => unsub();
-  }, []);
 
   // ── Live config ───────────────────────────────────────────────────────────
   useEffect(() => {
@@ -85,23 +70,6 @@ export const TVPage = () => {
     }, (err) => handleFirestoreError(err, OperationType.LIST, 'tv_channels'));
     return () => unsub();
   }, []);
-
-  // ── Chat ──────────────────────────────────────────────────────────────────
-  useEffect(() => {
-    const q = query(collection(db, 'live_chat'), orderBy('createdAt', 'desc'), limit(50));
-    const unsub = onSnapshot(q, (snap) => {
-      setMessages(snap.docs.map(d => ({ id: d.id, ...d.data() })).reverse());
-    }, (err) => handleFirestoreError(err, OperationType.LIST, 'live_chat'));
-    return () => unsub();
-  }, []);
-
-  useEffect(() => {
-    if (isInitialMount.current) {
-      if (messages.length > 0) isInitialMount.current = false;
-      return;
-    }
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-  }, [messages]);
 
   // ── Schedule ──────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -206,6 +174,19 @@ export const TVPage = () => {
     return match ? parseInt(match[1]) : null;
   };
 
+  /** Capa do vídeo. maxresdefault não existe em todo vídeo — o <img> cai para hqdefault. */
+  const getYouTubeThumb = (url: string): string | null => {
+    const id = getYouTubeId(url);
+    return id ? `https://img.youtube.com/vi/${id}/maxresdefault.jpg` : null;
+  };
+
+  /** Leva a viewport até o player — usado ao escolher um evento ou programa. */
+  const scrollToPlayer = () => {
+    setTimeout(() => {
+      playerWrapperRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 50);
+  };
+
   // ── Handlers ──────────────────────────────────────────────────────────────
 
   /** Seleciona um canal; detecta YouTube vs HLS automaticamente */
@@ -222,6 +203,7 @@ export const TVPage = () => {
       setSelectedChannel(channel);
     }
     setActiveChannelName(channel.name);
+    scrollToPlayer();
   };
 
   /** Clique na grade de programação: carrega YouTube e encerra HLS */
@@ -233,6 +215,7 @@ export const TVPage = () => {
     setSelectedVideoStart(null);
     setActiveChannelName(null);
     setCurrentProgram(prog);
+    scrollToPlayer();
   };
 
   /** Handshake com o iframe do YouTube para ele passar a enviar o playerState */
@@ -260,46 +243,6 @@ export const TVPage = () => {
     } catch {}
   };
 
-  /** Exclui uma mensagem — admin apaga qualquer uma; usuário só as próprias */
-  const handleDeleteMessage = async (id: string) => {
-    try {
-      await deleteDoc(doc(db, 'live_chat', id));
-    } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, 'live_chat');
-    }
-  };
-
-  /** Limpa o chat (somente admin). Remove as mensagens carregadas (últimas 50). */
-  const handleClearChat = async () => {
-    const ids = messages.map((m) => m.id).filter(Boolean);
-    if (ids.length === 0) return;
-    if (!window.confirm(`Apagar ${ids.length} mensagem(ns) do chat? Esta ação não pode ser desfeita.`)) return;
-    try {
-      const batch = writeBatch(db);
-      ids.forEach((id) => batch.delete(doc(db, 'live_chat', id)));
-      await batch.commit();
-    } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, 'live_chat');
-    }
-  };
-
-  const handleSendMessage = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newMessage.trim() || !user) return;
-    try {
-      await addDoc(collection(db, 'live_chat'), {
-        text: newMessage,
-        userId: user.uid,
-        userName: user.displayName || 'Anônimo',
-        userPhoto: user.photoURL,
-        createdAt: serverTimestamp(),
-      });
-      setNewMessage('');
-    } catch (err) {
-      handleFirestoreError(err, OperationType.CREATE, 'live_chat');
-    }
-  };
-
   // ── Flags de visibilidade do player ──────────────────────────────────────
   // O <video> fica sempre no DOM (hidden/block) para manter o ref ativo.
   const showVideo   = !!selectedChannel || (liveConfig?.active && liveConfig?.type === 'direct');
@@ -315,7 +258,7 @@ export const TVPage = () => {
         <AdBanner size="cover" page="tv" />
       </div>
 
-      {/* ── 2. Player + Chat ───────────────────────────────────────────────── */}
+      {/* ── 2. Player + Instagram ──────────────────────────────────────────── */}
       <section className="py-10 pb-6">
         <div className={isTheater ? 'w-full px-4' : 'max-w-7xl mx-auto px-4 sm:px-6 lg:px-8'}>
           <div className={isTheater ? 'flex flex-col gap-6' : 'grid grid-cols-1 lg:grid-cols-4 gap-6'}>
@@ -451,103 +394,17 @@ export const TVPage = () => {
             )}
           </div>
 
-          {/* Chat Ao Vivo — barra horizontal abaixo do player */}
-          <div className="mt-6 bg-gray-900 rounded-2xl border border-gray-800 flex flex-col md:flex-row overflow-hidden h-80 md:h-48">
-
-            {/* Cabeçalho + mensagens */}
-            <div className="flex-1 flex flex-col min-w-0">
-              <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between shrink-0 bg-gray-900/50 backdrop-blur-sm">
-                <h3 className="font-bold flex items-center gap-2 uppercase text-xs tracking-widest">
-                  <MessageSquare size={16} className="text-red-600" /> Chat Ao Vivo
-                </h3>
-                <div className="flex items-center gap-3">
-                  {isAdmin && messages.length > 0 && (
-                    <button
-                      onClick={handleClearChat}
-                      title="Apagar todas as mensagens"
-                      className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-widest text-gray-500 hover:text-red-500 transition-colors"
-                    >
-                      <Trash2 size={12} /> Limpar
-                    </button>
-                  )}
-                  {user && (
-                    <div className="flex items-center gap-2">
-                      <img src={user.photoURL || ''} className="w-5 h-5 rounded-full" alt="" />
-                      <span className="text-[10px] text-gray-400 font-bold uppercase">{user.displayName?.split(' ')[0]}</span>
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              <div className="flex-1 p-4 overflow-y-auto space-y-3 text-sm scrollbar-thin scrollbar-thumb-gray-800">
-                {messages.length > 0 ? messages.map((msg, i) => {
-                  const canDelete = !!msg.id && (isAdmin || (!!user && msg.userId === user.uid));
-                  return (
-                    <div key={msg.id || i} className="group flex gap-2 items-start animate-in fade-in slide-in-from-bottom-2 duration-300">
-                      <span className="font-bold text-red-500 shrink-0">{msg.userName}:</span>
-                      <span className="text-gray-300 break-words flex-1 min-w-0">{msg.text}</span>
-                      {canDelete && (
-                        <button
-                          onClick={() => handleDeleteMessage(msg.id)}
-                          title="Excluir mensagem"
-                          className="opacity-0 group-hover:opacity-100 text-gray-600 hover:text-red-500 transition-all shrink-0 mt-0.5"
-                        >
-                          <Trash2 size={13} />
-                        </button>
-                      )}
-                    </div>
-                  );
-                }) : (
-                  <div className="h-full flex flex-col items-center justify-center text-gray-600 text-center px-4">
-                    <MessageSquare size={28} className="mb-2 opacity-20" />
-                    <p className="text-xs">Seja o primeiro a comentar!</p>
-                  </div>
-                )}
-                <div ref={chatEndRef} />
-              </div>
-            </div>
-
-            {/* Input */}
-            <div className="p-4 bg-gray-900/50 border-t md:border-t-0 md:border-l border-gray-800 md:w-72 shrink-0 flex flex-col justify-center">
-              {user ? (
-                <form onSubmit={handleSendMessage} className="flex gap-2">
-                  <input
-                    type="text"
-                    value={newMessage}
-                    onChange={(e) => setNewMessage(e.target.value)}
-                    maxLength={500}
-                    placeholder="Diga algo..."
-                    className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-red-600 transition-colors"
-                  />
-                  <button
-                    type="submit"
-                    disabled={!newMessage.trim()}
-                    className="bg-red-600 text-white p-2 rounded-lg hover:bg-red-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    <Send size={16} />
-                  </button>
-                </form>
-              ) : (
-                <button
-                  onClick={loginWithGoogle}
-                  className="w-full bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg px-4 py-2 text-xs font-bold flex items-center justify-center gap-2 transition-all"
-                >
-                  <LogIn size={16} className="text-red-600" /> ENTRAR PARA COMENTAR
-                </button>
-              )}
-            </div>
-          </div>
         </div>
       </section>
 
-      {/* ── 3. Canais Disponíveis ──────────────────────────────────────────── */}
+      {/* ── 3. Últimos Eventos Ao Vivo ─────────────────────────────────────── */}
       <section className="py-12 bg-gray-950 border-t border-gray-800">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex items-center justify-between mb-8">
             <div className="flex items-center gap-3">
               <Tv size={22} className="text-red-600" />
               <h2 className="text-2xl font-black uppercase tracking-tighter">
-                Canais <span className="text-red-600">Disponíveis</span>
+                Últimos <span className="text-red-600">Eventos Ao Vivo</span>
               </h2>
             </div>
             {selectedChannel && (
@@ -563,37 +420,68 @@ export const TVPage = () => {
             )}
           </div>
 
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-5">
             {channels.map((ch) => {
               const isActive = selectedChannel?.url === ch.url || (!selectedChannel && activeChannelName === ch.name);
+              const thumb = getYouTubeThumb(ch.url);
               return (
                 <motion.button
                   key={ch.url}
                   whileHover={{ scale: 1.03 }}
                   whileTap={{ scale: 0.97 }}
                   onClick={() => handleChannelSelect(ch)}
-                  className={`relative group flex flex-col items-center justify-center gap-3 p-5 rounded-2xl border transition-all text-center ${
+                  className={`relative group text-left rounded-2xl overflow-hidden border transition-all ${
                     isActive
-                      ? 'bg-red-600/10 border-red-600 shadow-lg shadow-red-900/20'
-                      : 'bg-gray-800 border-gray-700 hover:border-gray-500'
+                      ? 'border-red-600 shadow-lg shadow-red-900/30'
+                      : 'border-gray-700 hover:border-gray-500'
                   }`}
                 >
-                  {isActive && (
-                    <span className="absolute top-3 right-3 flex items-center gap-1 bg-red-600 text-white text-[9px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full">
-                      <span className="w-1.5 h-1.5 bg-white rounded-full animate-pulse" />
-                      AO VIVO
-                    </span>
-                  )}
-                  <div className={`w-12 h-12 rounded-full flex items-center justify-center transition-colors ${
-                    isActive ? 'bg-red-600 text-white' : 'bg-gray-700 text-gray-400 group-hover:bg-gray-600'
-                  }`}>
-                    {isActive ? <Play size={20} fill="currentColor" /> : <Tv size={20} />}
+                  {/* Capa do vídeo no YouTube */}
+                  <div className="relative aspect-video bg-gray-800 overflow-hidden">
+                    {thumb ? (
+                      <img
+                        src={thumb}
+                        alt={ch.name}
+                        loading="lazy"
+                        referrerPolicy="no-referrer"
+                        className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110"
+                        onError={(e) => {
+                          // maxresdefault não existe para todo vídeo; hqdefault sempre existe
+                          const img = e.currentTarget;
+                          if (img.src.includes('maxresdefault')) {
+                            img.src = img.src.replace('maxresdefault', 'hqdefault');
+                          }
+                        }}
+                      />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center text-gray-600">
+                        <Tv size={30} />
+                      </div>
+                    )}
+
+                    {/* Play no hover */}
+                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                      <div className="w-12 h-12 bg-red-600 rounded-full flex items-center justify-center shadow-xl">
+                        <Play size={20} fill="white" color="white" className="ml-0.5" />
+                      </div>
+                    </div>
+
+                    {isActive && (
+                      <span className="absolute top-2.5 right-2.5 flex items-center gap-1 bg-red-600 text-white text-[9px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full">
+                        <span className="w-1.5 h-1.5 bg-white rounded-full animate-pulse" />
+                        AO VIVO
+                      </span>
+                    )}
                   </div>
-                  <span className={`text-xs font-bold uppercase tracking-wider leading-snug ${
-                    isActive ? 'text-red-400' : 'text-gray-200'
-                  }`}>
-                    {ch.name}
-                  </span>
+
+                  {/* Título */}
+                  <div className={`p-3 transition-colors ${isActive ? 'bg-red-600/10' : 'bg-gray-800'}`}>
+                    <span className={`text-xs font-bold uppercase tracking-wider leading-snug line-clamp-2 block ${
+                      isActive ? 'text-red-400' : 'text-gray-200'
+                    }`}>
+                      {ch.name}
+                    </span>
+                  </div>
                 </motion.button>
               );
             })}
@@ -674,37 +562,75 @@ export const TVPage = () => {
                   const timeLabel = prog.durationSeconds
                     ? `${prog.startLabel.slice(0, 5)}–${prog.endLabel.slice(0, 5)}`
                     : (prog.time || prog.startLabel.slice(0, 5));
+                  // capa própria cadastrada no admin tem prioridade sobre a do YouTube
+                  const cover = prog.thumbnailUrl || (prog.youtubeUrl ? getYouTubeThumb(prog.youtubeUrl) : null);
                   return (
                     <button
                       key={prog.id}
                       onClick={() => handleProgramClick(prog)}
-                      className={`text-left p-4 rounded-xl border-l-4 transition-all hover:scale-[1.02] text-sm ${
+                      className={`group text-left rounded-xl overflow-hidden border transition-all hover:scale-[1.02] ${
                         isLive
-                          ? 'bg-red-600/10 border-red-600 shadow-lg shadow-red-900/20'
-                          : 'bg-gray-800 border-gray-700 hover:border-gray-500'
+                          ? 'border-red-600 shadow-lg shadow-red-900/30'
+                          : 'border-gray-700 hover:border-gray-500'
                       }`}
                     >
-                      <div className="flex items-center justify-between mb-2">
-                        <span className={`font-mono font-bold text-sm ${isLive ? 'text-red-400' : 'text-red-500'}`}>
+                      {/* Capa */}
+                      <div className="relative aspect-video bg-gray-800 overflow-hidden">
+                        {cover ? (
+                          <img
+                            src={cover}
+                            alt={prog.title}
+                            loading="lazy"
+                            referrerPolicy="no-referrer"
+                            className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110"
+                            onError={(e) => {
+                              // maxresdefault não existe para todo vídeo; hqdefault sempre existe
+                              const img = e.currentTarget;
+                              if (img.src.includes('maxresdefault')) {
+                                img.src = img.src.replace('maxresdefault', 'hqdefault');
+                              }
+                            }}
+                          />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center text-gray-600">
+                            <Calendar size={26} />
+                          </div>
+                        )}
+
+                        {/* Horário sobreposto */}
+                        <span className="absolute bottom-2 left-2 font-mono font-bold text-[11px] bg-black/75 text-white px-2 py-0.5 rounded">
                           {timeLabel}
                         </span>
+
                         {isLive && (
-                          <span className="flex items-center gap-1 text-[9px] font-bold text-red-400 uppercase tracking-widest">
-                            <span className="w-1.5 h-1.5 bg-red-500 rounded-full animate-pulse" />
+                          <span className="absolute top-2 right-2 flex items-center gap-1 bg-red-600 text-white text-[9px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full">
+                            <span className="w-1.5 h-1.5 bg-white rounded-full animate-pulse" />
                             No ar agora
                           </span>
                         )}
+
+                        {/* Play no hover — só quando há vídeo para tocar */}
+                        {prog.youtubeUrl && (
+                          <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                            <div className="w-11 h-11 bg-red-600 rounded-full flex items-center justify-center shadow-xl">
+                              <Play size={18} fill="white" color="white" className="ml-0.5" />
+                            </div>
+                          </div>
+                        )}
                       </div>
-                      <h3 className="text-sm font-bold leading-snug line-clamp-2 mb-1">{prog.title}</h3>
-                      {prog.category && (
-                        <p className="text-[10px] text-gray-500 uppercase tracking-widest mb-1">{prog.category}</p>
-                      )}
-                      {prog.host && <p className="text-gray-400 text-xs line-clamp-1 mb-2">Com {prog.host}</p>}
-                      {prog.youtubeUrl && (
-                        <div className="flex items-center gap-1 text-[10px] font-bold text-red-500 uppercase tracking-widest">
-                          <Play size={10} fill="currentColor" /> Assistir
-                        </div>
-                      )}
+
+                      {/* Informações */}
+                      <div className={`p-3 transition-colors ${isLive ? 'bg-red-600/10' : 'bg-gray-800'}`}>
+                        {prog.category && (
+                          <p className="text-[10px] text-red-500 uppercase tracking-widest font-bold mb-1">
+                            {prog.category}
+                          </p>
+                        )}
+                        <h3 className="text-sm font-bold leading-snug line-clamp-2">{prog.title}</h3>
+                        {prog.host && (
+                          <p className="text-gray-400 text-xs line-clamp-1 mt-1">Com {prog.host}</p>
+                        )}
+                      </div>
                     </button>
                   );
                 })}
