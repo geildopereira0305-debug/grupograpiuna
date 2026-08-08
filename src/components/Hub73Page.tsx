@@ -210,10 +210,11 @@ export const Hub73Page = () => {
 
               {/* Player central ladeado por colunas de banners (desktop) */}
               <div className="flex gap-6 items-start">
-                {/* Coluna esquerda — 2 banners */}
+                {/* Coluna esquerda — 3 banners */}
                 <aside className="hidden lg:flex flex-col gap-6 shrink-0">
                   <AdBanner size="sidebar" page="hub73" index={0} />
                   <AdBanner size="sidebar" page="hub73" index={1} />
+                  <AdBanner size="sidebar" page="hub73" index={2} />
                 </aside>
 
                 {/* Player */}
@@ -237,40 +238,47 @@ export const Hub73Page = () => {
                         </motion.div>
                       </AnimatePresence>
                     </div>
+
+                    {/* Descrição do evento — abaixo do player, na coluna central */}
+                    <AnimatePresence mode="wait">
+                      <motion.div
+                        key={`info-${selectedVideo.id}`}
+                        initial={{ opacity: 0, y: 8 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: -6 }}
+                        transition={{ duration: 0.25, ease: 'easeOut' }}
+                        className="mt-5"
+                      >
+                        {selectedVideo.category && (
+                          <span className="text-[10px] font-black uppercase tracking-widest text-red-500 block mb-1.5">
+                            {selectedVideo.category}
+                          </span>
+                        )}
+                        <h2 className="text-white text-xl md:text-2xl font-black leading-tight mb-3">
+                          {selectedVideo.title}
+                        </h2>
+                        {selectedVideo.description ? (
+                          <p className="text-gray-300 text-sm leading-relaxed whitespace-pre-line">
+                            {selectedVideo.description}
+                          </p>
+                        ) : (
+                          <p className="text-gray-600 text-sm italic">
+                            Sem descrição cadastrada para este evento.
+                          </p>
+                        )}
+                      </motion.div>
+                    </AnimatePresence>
                   </div>
                 </div>
 
                 {/* Coluna direita — 3 banners */}
                 <aside className="hidden lg:flex flex-col gap-6 shrink-0">
-                  <AdBanner size="sidebar" page="hub73" index={2} />
                   <AdBanner size="sidebar" page="hub73" index={3} />
                   <AdBanner size="sidebar" page="hub73" index={4} />
+                  <AdBanner size="sidebar" page="hub73" index={5} />
                 </aside>
               </div>
 
-              {/* Info abaixo do player */}
-              <AnimatePresence mode="wait">
-                <motion.div
-                  key={`info-${selectedVideo.id}`}
-                  initial={{ opacity: 0, y: 8 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -6 }}
-                  transition={{ duration: 0.25, ease: 'easeOut' }}
-                  className="mt-6 px-1"
-                >
-                  <span className="text-[10px] font-black uppercase tracking-widest text-red-500 block mb-1">
-                    {selectedVideo.category}
-                  </span>
-                  <h2 className="text-white text-2xl md:text-3xl font-black leading-tight mb-2">
-                    {selectedVideo.title}
-                  </h2>
-                  {selectedVideo.description && (
-                    <p className="text-gray-400 text-sm leading-relaxed max-w-3xl">
-                      {selectedVideo.description}
-                    </p>
-                  )}
-                </motion.div>
-              </AnimatePresence>
             </>
           ) : null}
         </div>
