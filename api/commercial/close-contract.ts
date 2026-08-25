@@ -20,12 +20,24 @@
  * auditoria. O preço vem do documento do pacote lido AQUI, nunca do navegador,
  * e o packageSnapshot é tirado no servidor, no instante da venda.
  */
+import crypto from 'node:crypto';
 import { cert, getApps, initializeApp, type App } from 'firebase-admin/app';
-import { getAuth, type Auth } from 'firebase-admin/auth';
 import {
   FieldValue, getFirestore, Timestamp, type Firestore,
 } from 'firebase-admin/firestore';
 import { z } from 'zod';
+
+/*
+ * NOTA — por que NÃO importamos 'firebase-admin/auth':
+ * firebase-admin/auth → jwks-rsa → jose@6, que é ESM puro. A Vercel compila
+ * esta rota para CommonJS e o require() de um pacote ESM falha com
+ * ERR_REQUIRE_ESM. Só os verificadores de token puxam essa cadeia:
+ * firebase-admin/app e firebase-admin/firestore estão livres dela.
+ *
+ * Por isso o ID token é validado abaixo com o crypto nativo do Node, seguindo
+ * o procedimento oficial do Firebase para bibliotecas JWT de terceiros. Isso
+ * remove a dependência conflitante em vez de contorná-la.
+ */
 
 /* ═══════════════════════════════════════════════════════════════════════════
    1. Firebase Admin
@@ -40,7 +52,6 @@ const APP_NAME = 'grupograpiuna-admin';
 
 let cachedApp: App | null = null;
 let cachedDb: Firestore | null = null;
-let cachedAuth: Auth | null = null;
 
 /** A chave privada chega com \n escapados; sem desfazer isso o SDK a rejeita. */
 function normalizePrivateKey(raw: string): string {
@@ -94,14 +105,108 @@ function getAdminDb(): Firestore {
   return cachedDb;
 }
 
-function getAdminAuth(): Auth {
-  if (cachedAuth) return cachedAuth;
-  cachedAuth = getAuth(getAdminApp());
-  return cachedAuth;
+/* ═══════════════════════════════════════════════════════════════════════════
+   2. Verificação do ID token (crypto nativo — sem jose)
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/** Certificados públicos do Google que assinam os ID tokens do Firebase. */
+const GOOGLE_CERTS_URL =
+  'https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com';
+
+let certCache: { certs: Record<string, string>; expiresAt: number } | null = null;
+
+/**
+ * Busca (e memoriza) os certificados do Google, respeitando o max-age do
+ * Cache-Control. Sem cache, cada requisição faria uma chamada externa.
+ */
+async function getGoogleCerts(): Promise<Record<string, string>> {
+  if (certCache && certCache.expiresAt > Date.now()) return certCache.certs;
+
+  const response = await fetch(GOOGLE_CERTS_URL);
+  if (!response.ok) {
+    throw new Error(`Falha ao obter certificados do Google (${response.status})`);
+  }
+  const certs = (await response.json()) as Record<string, string>;
+
+  const maxAge = Number(/max-age=(\d+)/.exec(response.headers.get('cache-control') ?? '')?.[1] ?? 3600);
+  certCache = { certs, expiresAt: Date.now() + maxAge * 1000 };
+  return certs;
+}
+
+function base64UrlDecode(input: string): Buffer {
+  return Buffer.from(input.replace(/-/g, '+').replace(/_/g, '/'), 'base64');
+}
+
+export interface DecodedIdToken {
+  uid: string;
+  email: string;
+  emailVerified: boolean;
+}
+
+/**
+ * Valida um ID token do Firebase: assinatura RS256 contra os certificados do
+ * Google e todas as claims exigidas. Devolve null em QUALQUER falha — nunca
+ * lança para o chamador confundir token inválido com erro de infraestrutura.
+ *
+ * @param nowSeconds injetável apenas para teste; em produção usa o relógio real.
+ */
+export async function verifyFirebaseIdToken(
+  token: string,
+  projectId: string,
+  certsProvider: () => Promise<Record<string, string>> = getGoogleCerts,
+  nowSeconds: number = Math.floor(Date.now() / 1000),
+): Promise<DecodedIdToken | null> {
+  const parts = token.split('.');
+  if (parts.length !== 3) return null;
+  const [headerB64, payloadB64, signatureB64] = parts;
+
+  let header: any;
+  let payload: any;
+  try {
+    header = JSON.parse(base64UrlDecode(headerB64).toString('utf8'));
+    payload = JSON.parse(base64UrlDecode(payloadB64).toString('utf8'));
+  } catch {
+    return null;
+  }
+
+  // Exigir RS256 bloqueia os ataques clássicos de "alg: none" e de troca para
+  // HS256, em que o atacante assinaria o token com a própria chave pública.
+  if (header?.alg !== 'RS256' || typeof header?.kid !== 'string') return null;
+
+  const certs = await certsProvider();
+  const publicCert = certs[header.kid];
+  if (!publicCert) return null;
+
+  // Assinatura conferida ANTES de qualquer claim ser considerada confiável
+  const verifier = crypto.createVerify('RSA-SHA256');
+  verifier.update(`${headerB64}.${payloadB64}`);
+  verifier.end();
+  let signatureValid = false;
+  try {
+    signatureValid = verifier.verify(publicCert, base64UrlDecode(signatureB64));
+  } catch {
+    return null;
+  }
+  if (!signatureValid) return null;
+
+  // Claims obrigatórias (documentação oficial do Firebase)
+  const CLOCK_SKEW = 300; // 5 min de tolerância entre relógios
+  if (payload?.aud !== projectId) return null;
+  if (payload?.iss !== `https://securetoken.google.com/${projectId}`) return null;
+  if (typeof payload?.exp !== 'number' || payload.exp <= nowSeconds) return null;
+  if (typeof payload?.iat !== 'number' || payload.iat > nowSeconds + CLOCK_SKEW) return null;
+  if (typeof payload?.sub !== 'string' || payload.sub.length === 0) return null;
+  if (typeof payload?.auth_time === 'number' && payload.auth_time > nowSeconds + CLOCK_SKEW) return null;
+
+  return {
+    uid: payload.sub,
+    email: typeof payload.email === 'string' ? payload.email : '',
+    emailVerified: payload.email_verified === true,
+  };
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   2. Autenticação e papéis
+   3. Papel do usuário
    ═══════════════════════════════════════════════════════════════════════════ */
 
 /**
@@ -128,21 +233,25 @@ async function verifyRequestUser(
 ): Promise<AuthenticatedUser | null> {
   const token = authorizationHeader?.replace(/^Bearer\s+/i, '').trim();
   if (!token) return null;
-  try {
-    const decoded = await getAdminAuth().verifyIdToken(token);
-    const snap = await getAdminDb().collection('users').doc(decoded.uid).get();
-    return {
-      uid: decoded.uid,
-      email: decoded.email ?? '',
-      role: (snap.exists ? (snap.data()?.role as string) : undefined) ?? 'user',
-    };
-  } catch {
-    return null;
-  }
+
+  const projectId = process.env.FIREBASE_PROJECT_ID;
+  if (!projectId) throw new Error('FIREBASE_PROJECT_ID ausente');
+
+  const decoded = await verifyFirebaseIdToken(token, projectId);
+  if (!decoded) return null;
+
+  // O papel vem do Firestore, e não do token — mesmo critério já usado por
+  // useAuth.ts e pelas Security Rules.
+  const snap = await getAdminDb().collection('users').doc(decoded.uid).get();
+  return {
+    uid: decoded.uid,
+    email: decoded.email,
+    role: (snap.exists ? (snap.data()?.role as string) : undefined) ?? 'user',
+  };
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   3. Respostas HTTP — operação comercial nunca pode ser cacheada
+   4. Respostas HTTP — operação comercial nunca pode ser cacheada
    ═══════════════════════════════════════════════════════════════════════════ */
 
 function sendJson(res: any, status: number, body: unknown): void {
@@ -162,7 +271,7 @@ function parseBody(req: any): Record<string, unknown> {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   4. Calendário e rateio (espelha src/lib/installment-dates.ts)
+   5. Calendário e rateio (espelha src/lib/installment-dates.ts)
    ═══════════════════════════════════════════════════════════════════════════ */
 
 export const BUSINESS_TIME_ZONE = 'America/Bahia';
@@ -243,7 +352,7 @@ export function buildInstallmentPlan(
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   5. Validação (espelha closeContractSchema de src/lib/commercial-validation.ts)
+   6. Validação (espelha closeContractSchema de src/lib/commercial-validation.ts)
    ═══════════════════════════════════════════════════════════════════════════ */
 
 const AD_FORMATS = ['cover', 'leaderboard', 'intermediario', 'sidebar', 'mobile'] as const;
@@ -287,7 +396,7 @@ function formatZodErrors(error: z.ZodError): Record<string, string> {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   6. Handler
+   7. Handler
    ═══════════════════════════════════════════════════════════════════════════ */
 
 /** Coleção server-only: nenhuma regra a libera, então o cliente não a alcança. */
@@ -464,6 +573,43 @@ export default async function handler(req: any, res: any) {
           paymentMethod: null,
           updatedAt: now,
         });
+      }
+
+      // Semeia o resumo mensal: sem isto, a primeira baixa deixaria o saldo
+      // pendente negativo. "Contratado" entra no mês de início da vigência;
+      // "pendente" é distribuído pelo mês de vencimento de cada parcela.
+      const summaries = db.collection('financial_summaries');
+      const startPeriod = period.startDate.slice(0, 7);
+
+      const pendingByPeriod = new Map<string, number>();
+      for (const installment of plan) {
+        const p = installment.dueDate.slice(0, 7);
+        pendingByPeriod.set(p, (pendingByPeriod.get(p) ?? 0) + installment.amountCents);
+      }
+
+      // O mês de início pode coincidir com um mês de vencimento; nesse caso os
+      // dois incrementos precisam ir num único set, senão um sobrescreve o outro.
+      const startPending = pendingByPeriod.get(startPeriod) ?? 0;
+      pendingByPeriod.delete(startPeriod);
+
+      tx.set(
+        summaries.doc(startPeriod),
+        {
+          period: startPeriod,
+          contractedCents: FieldValue.increment(totalCents),
+          contractCount: FieldValue.increment(1),
+          ...(startPending > 0 ? { pendingCents: FieldValue.increment(startPending) } : {}),
+          updatedAt: now,
+        },
+        { merge: true },
+      );
+
+      for (const [p, cents] of pendingByPeriod) {
+        tx.set(
+          summaries.doc(p),
+          { period: p, pendingCents: FieldValue.increment(cents), updatedAt: now },
+          { merge: true },
+        );
       }
 
       // 9. Contadores de cota, um por formato

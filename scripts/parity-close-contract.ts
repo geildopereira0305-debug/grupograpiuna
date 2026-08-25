@@ -15,6 +15,7 @@
  */
 import * as lib from '../src/lib/installment-dates';
 import * as api from '../api/commercial/close-contract';
+import * as payment from '../api/commercial/register-payment';
 
 let failures = 0;
 
@@ -95,10 +96,34 @@ for (const total of [125000, 100000, 333333]) {
 compare('todayBusinessDate()', lib.todayBusinessDate(), api.todayBusinessDate());
 compare('BUSINESS_TIME_ZONE', lib.BUSINESS_TIME_ZONE, api.BUSINESS_TIME_ZONE);
 
-const total = monthChecks + splitChecks + periodChecks + planChecks + 2;
+/* ── register-payment: mesmo relógio e mesmo calendário ──────────────────── */
+compare('payment: todayBusinessDate()', lib.todayBusinessDate(), payment.todayBusinessDate());
+compare('payment: BUSINESS_TIME_ZONE', lib.BUSINESS_TIME_ZONE, payment.BUSINESS_TIME_ZONE);
+let paymentChecks = 2;
+for (const year of [2026, 2028]) {
+  for (let month = 1; month <= 12; month++) {
+    compare(
+      `payment: lastDayOfMonth(${year}, ${month})`,
+      lib.lastDayOfMonth(year, month),
+      payment.lastDayOfMonth(year, month),
+    );
+    paymentChecks++;
+  }
+}
+// periodOf precisa extrair a competência exatamente como os resumos esperam
+for (const [date, expected] of [
+  ['2026-01-31', '2026-01'],
+  ['2026-12-01', '2026-12'],
+  ['2028-02-29', '2028-02'],
+] as [string, string][]) {
+  compare(`payment: periodOf(${date})`, payment.periodOf(date), expected);
+  paymentChecks++;
+}
+
+const total = monthChecks + splitChecks + periodChecks + planChecks + 2 + paymentChecks;
 console.log(
   failures === 0
-    ? `\nPARIDADE OK — ${total} comparações (datas: ${monthChecks}, rateio: ${splitChecks}, vigência: ${periodChecks}, planos: ${planChecks})`
+    ? `\nPARIDADE OK — ${total} comparações (datas: ${monthChecks}, rateio: ${splitChecks}, vigência: ${periodChecks}, planos: ${planChecks}, baixa: ${paymentChecks})`
     : `\n${failures} DIVERGÊNCIA(S) em ${total} comparações`,
 );
 process.exit(failures === 0 ? 0 : 1);

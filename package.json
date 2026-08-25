@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
-    "test:parity": "tsx scripts/parity-close-contract.ts"
+    "test:parity": "tsx scripts/parity-close-contract.ts",
+    "test:token": "tsx scripts/test-token-verification.ts"
   },
   "dependencies": {
     "@google/genai": "^1.29.0",

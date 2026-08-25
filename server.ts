@@ -4,6 +4,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import dotenv from "dotenv";
 import closeContractHandler from "./api/commercial/close-contract";
+import registerPaymentHandler from "./api/commercial/register-payment";
 
 dotenv.config({ path: ".env.local" });
 dotenv.config();
@@ -26,6 +27,7 @@ async function startServer() {
 
   // Espelha api/commercial/close-contract.ts (transacional; exige Firebase Admin)
   app.post("/api/commercial/close-contract", (req, res) => closeContractHandler(req, res));
+  app.post("/api/commercial/register-payment", (req, res) => registerPaymentHandler(req, res));
 
   // API routes
   app.get("/api/health", (req, res) => {

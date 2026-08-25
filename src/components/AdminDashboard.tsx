@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useAuth } from '../hooks/useAuth';
 import { loginWithGoogle, logout } from '../firebase';
-import { Handshake, LayoutDashboard, Newspaper, Tv, Image as ImageIcon, LogOut, LogIn, ChevronRight, Briefcase, Mic, Youtube, BarChart3, Smartphone, ShoppingBag, Radio, Package as PackageIcon, Users as UsersIcon } from 'lucide-react';
+import { Handshake, LayoutDashboard, Newspaper, Tv, Image as ImageIcon, LogOut, LogIn, ChevronRight, Briefcase, Mic, Youtube, BarChart3, Smartphone, ShoppingBag, Radio, Package as PackageIcon, Users as UsersIcon, Wallet } from 'lucide-react';
 import { AdminNews } from './AdminNews';
 import { AdminSchedule } from './AdminSchedule';
 import { AdminAds } from './AdminAds';
@@ -15,6 +15,7 @@ import { AdminLiveChannels } from './AdminLiveChannels';
 import { AdminPackages } from './AdminPackages';
 import { AdminClients } from './AdminClients';
 import { AdminContracts } from './AdminContracts';
+import { AdminFinance } from './AdminFinance';
 import type { ClientDocument, WithId } from '../lib/commercial-types';
 
 /**
@@ -36,7 +37,7 @@ const PANEL_ROLES = [
 export const AdminDashboard = () => {
   const { user, role, loading, isAdmin } = useAuth();
   const [contractClient, setContractClient] = useState<WithId<ClientDocument> | null>(null);
-  const [activeTab, setActiveTab] = useState<'analytics' | 'packages' | 'clients' | 'contracts' | 'news' | 'schedule' | 'channels' | 'ads' | 'hub73' | 'podcasts' | 'videos' | 'stories' | 'shop'>('analytics');
+  const [activeTab, setActiveTab] = useState<'analytics' | 'packages' | 'clients' | 'contracts' | 'finance' | 'news' | 'schedule' | 'channels' | 'ads' | 'hub73' | 'podcasts' | 'videos' | 'stories' | 'shop'>('analytics');
 
   if (loading) {
     return (
@@ -93,6 +94,7 @@ export const AdminDashboard = () => {
             { id: 'packages', label: 'Pacotes', icon: PackageIcon },
             { id: 'clients', label: 'Clientes', icon: UsersIcon },
             { id: 'contracts', label: 'Contratos', icon: Handshake },
+            { id: 'finance', label: 'Financeiro', icon: Wallet },
             { id: 'news', label: 'Notícias', icon: Newspaper },
             { id: 'schedule', label: 'TV Grade', icon: Tv },
             { id: 'channels', label: 'Canais TV', icon: Radio },
@@ -154,6 +156,7 @@ export const AdminDashboard = () => {
               onConsumeInitialClient={() => setContractClient(null)}
             />
           )}
+          {activeTab === 'finance' && <AdminFinance />}
           {activeTab === 'news' && <AdminNews />}
           {activeTab === 'schedule' && <AdminSchedule />}
           {activeTab === 'channels' && <AdminLiveChannels />}

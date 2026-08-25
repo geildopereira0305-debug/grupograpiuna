@@ -45,3 +45,50 @@ inevitável. Nesse caso, escreva um **teste de paridade** que compare as duas
 implementações — ver `scripts/parity-close-contract.ts`, executado por
 `npm run test:parity`. Sem isso, as cópias divergem em silêncio e o usuário vê
 um valor enquanto o banco grava outro.
+
+---
+
+## ⚠️ Segunda armadilha: pacotes ESM puros
+
+Depois de resolver os imports relativos, um novo deploy falhou com:
+
+```
+Error [ERR_REQUIRE_ESM]: require() of ES Module .../node_modules/jose/dist/webapi/index.js
+```
+
+Causa: `firebase-admin/auth` → `jwks-rsa` → `jose@6`, que é **ESM puro**. A Vercel
+compilou a rota para CommonJS e o `require()` de um pacote ESM falha.
+
+Note que os dois erros se contradizem — um deploy tratou a rota como ESM, o
+outro como CommonJS. Por isso **cada rota deve funcionar nos dois formatos**.
+
+### Regra prática
+
+`firebase-admin/app` e `firebase-admin/firestore` estão livres de `jose`.
+Quem puxa a cadeia são apenas os verificadores de token:
+
+```
+firebase-admin/lib/auth/token-verifier.js
+firebase-admin/lib/app-check/token-verifier.js
+firebase-admin/lib/phone-number-verification/token-verifier.js
+```
+
+Por isso o ID token é validado com o `crypto` nativo do Node (ver a seção 2 de
+`close-contract.ts`), seguindo o procedimento oficial do Firebase para
+bibliotecas JWT de terceiros. Os testes estão em
+`scripts/test-token-verification.ts` (`npm run test:token`).
+
+### Verificação obrigatória antes do deploy
+
+```bash
+# 1. Carrega nos DOIS formatos de módulo?
+npx esbuild api/minha/rota.ts --format=esm --platform=node --outfile=.repro/r.mjs
+npx esbuild api/minha/rota.ts --format=cjs --platform=node --outfile=.repro/r.cjs
+node -e "import('./.repro/r.mjs').then(()=>console.log('ESM OK'))"
+node -e "require('./.repro/r.cjs'); console.log('CJS OK')"
+
+# 2. Nenhum pacote ESM puro no grafo?
+npx esbuild api/minha/rota.ts --bundle --platform=node --format=cjs \
+  --outfile=.repro/b.cjs --metafile=.repro/meta.json
+node -e "const m=require('./.repro/meta.json');console.log(Object.keys(m.inputs).filter(i=>/node_modules[\\/]jose[\\/]/.test(i)).length)"
+```
