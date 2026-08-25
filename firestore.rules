@@ -61,6 +61,102 @@ service cloud.firestore {
         (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'editor']);
     }
 
+    /* ─── Papéis do módulo comercial (seção 9 do guia) ──────────────────── */
+
+    // Papel gravado em users/{uid}. Devolve '' quando o documento não existe —
+    // sem esse cuidado, get() em null lança erro e derruba a regra inteira.
+    function userRole() {
+      return (isAuthenticated() &&
+              exists(/databases/$(database)/documents/users/$(request.auth.uid)))
+        ? get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role
+        : '';
+    }
+
+    // isAdmin() entra em todas as checagens porque cobre também o fallback por
+    // e-mail, usado antes de existir documento em users/{uid}.
+    function hasRole(roles) {
+      return isAuthenticated() && (userRole() in roles || isAdmin());
+    }
+
+    // 'editor' é legado do portal editorial e vale como 'gerente' durante a
+    // migração, conforme orienta o guia. Remover após revisar todos os usuários.
+    function canReadCommercial() {
+      return hasRole(['admin', 'gerente', 'comercial', 'financeiro',
+                      'operador_anuncios', 'visualizacao', 'editor']);
+    }
+
+    function canWritePackages() {
+      return hasRole(['admin', 'gerente', 'editor']);
+    }
+
+    function canWriteClients() {
+      return hasRole(['admin', 'gerente', 'comercial', 'editor']);
+    }
+
+    // Operador de anúncios NÃO lê valores financeiros (exigência do guia).
+    function canReadFinance() {
+      return hasRole(['admin', 'gerente', 'comercial', 'financeiro',
+                      'visualizacao', 'editor']);
+    }
+
+    // Financeiro NÃO opera anúncios.
+    function canReadAds() {
+      return hasRole(['admin', 'gerente', 'comercial', 'operador_anuncios',
+                      'visualizacao', 'editor']);
+    }
+
+    /* ─── Validações do catálogo comercial ──────────────────────────────── */
+
+    // Preços por duração, em centavos inteiros. As chaves são strings porque
+    // é assim que o Firestore guarda chaves numéricas de mapa.
+    function isValidPrices(p) {
+      return p.keys().hasOnly(['1', '3', '6', '12']) &&
+             p.keys().hasAll(['1', '3', '6', '12']) &&
+             p['1'] is int && p['1'] >= 0 &&
+             p['3'] is int && p['3'] >= 0 &&
+             p['6'] is int && p['6'] >= 0 &&
+             p['12'] is int && p['12'] >= 0;
+    }
+
+    function isValidAdLimits(a) {
+      return a.keys().hasOnly(['cover', 'leaderboard', 'intermediario', 'sidebar', 'mobile']) &&
+             a.keys().hasAll(['cover', 'leaderboard', 'intermediario', 'sidebar', 'mobile']) &&
+             a.cover is int && a.cover >= 0 &&
+             a.leaderboard is int && a.leaderboard >= 0 &&
+             a.intermediario is int && a.intermediario >= 0 &&
+             a.sidebar is int && a.sidebar >= 0 &&
+             a.mobile is int && a.mobile >= 0;
+    }
+
+    // Espelha packageSchema de src/lib/commercial-validation.ts. A validação
+    // precisa existir aqui também: o navegador pode ser contornado.
+    function isValidPackage(data) {
+      return data.keys().hasAll(['name', 'slug', 'description', 'color',
+                                 'isActive', 'isFeatured', 'sortOrder',
+                                 'prices', 'adLimits']) &&
+             data.name is string && data.name.size() >= 2 && data.name.size() <= 80 &&
+             data.slug is string && data.slug.size() >= 2 && data.slug.size() <= 60 &&
+             data.description is string && data.description.size() <= 500 &&
+             data.color is string && data.color.matches('^#[0-9A-Fa-f]{6}$') &&
+             data.isActive is bool &&
+             data.isFeatured is bool &&
+             data.sortOrder is int && data.sortOrder >= 0 &&
+             isValidPrices(data.prices) &&
+             isValidAdLimits(data.adLimits);
+    }
+
+    function isValidSalesLead(data) {
+      return data.keys().hasAll(['name', 'email', 'phone', 'status', 'createdAt']) &&
+             data.name is string && data.name.size() >= 2 && data.name.size() <= 120 &&
+             data.email is string && data.email.size() > 0 && data.email.size() <= 160 &&
+             data.phone is string && data.phone.size() <= 20 &&
+             (!data.keys().hasAny(['message']) ||
+              (data.message is string && data.message.size() <= 1000)) &&
+             // Lead entra sempre como 'new'; a triagem é feita pela equipe
+             data.status == 'new' &&
+             data.createdAt == request.time;
+    }
+
     function isValidNews(data) {
       return data.keys().hasAll(['title', 'content', 'category', 'author', 'createdAt']) &&
              data.title is string && data.title.size() > 0 && data.title.size() < 200 &&
@@ -195,6 +291,106 @@ service cloud.firestore {
     match /shop_products/{productId=**} {
       allow read: if true;
       allow create, update, delete: if isAdmin() || isEditor();
+    }
+
+    /* ═══════════════════════════════════════════════════════════════════════
+       MÓDULO COMERCIAL
+
+       Princípio: catálogo (pacotes/serviços/clientes) é gravado pelo painel com
+       validação nas regras; contrato, parcela, cota e alocação NÃO aceitam
+       escrita direta do navegador. Total, packageSnapshot e controle de cota
+       dependem de transação atômica e são gravados por api/commercial/* com o
+       Admin SDK — que ignora estas regras, mas valida token e papel antes.
+       ═══════════════════════════════════════════════════════════════════════ */
+
+    match /packages/{packageId} {
+      // Catálogo público de /anuncie enxerga só pacotes ativos; a equipe vê todos.
+      // Em consultas de lista, o filtro where('isActive','==',true) é obrigatório
+      // para visitantes — sem ele a query encontra um inativo e falha inteira.
+      allow read: if canReadCommercial() || resource.data.isActive == true;
+      allow create, update: if canWritePackages() && isValidPackage(request.resource.data);
+      // Exclusão é lógica (isActive: false) para preservar packageSnapshot dos
+      // contratos já vendidos. Apagar de fato fica restrito ao admin.
+      allow delete: if isAdmin();
+    }
+
+    // benefits/ e contents/ são texto comercial (sem dado de cliente) e
+    // alimentam a pré-visualização pública do pacote.
+    match /packages/{packageId}/benefits/{benefitId} {
+      allow read: if true;
+      allow write: if canWritePackages();
+    }
+
+    match /packages/{packageId}/contents/{contentId} {
+      allow read: if true;
+      allow write: if canWritePackages();
+    }
+
+    match /service_catalog/{serviceId} {
+      allow read: if canReadCommercial() || resource.data.isActive == true;
+      allow create, update: if canWritePackages();
+      allow delete: if isAdmin();
+    }
+
+    match /clients/{clientId} {
+      allow read: if canReadCommercial();
+      allow create, update: if canWriteClients();
+      allow delete: if isAdmin();
+    }
+
+    // Índice de unicidade de CPF/CNPJ: permitir apenas create (nunca update)
+    // faz o próprio Firestore rejeitar o segundo cadastro do mesmo documento.
+    match /client_identifiers/{documentNormalized} {
+      allow read: if canReadCommercial();
+      allow create: if canWriteClients();
+      allow update: if false;
+      allow delete: if isAdmin();
+    }
+
+    match /contracts/{contractId} {
+      allow read: if canReadCommercial();
+      allow write: if false; // somente api/commercial/close-contract.ts
+    }
+
+    match /contracts/{contractId}/adUsage/{format} {
+      allow read: if canReadAds() || canReadFinance();
+      allow write: if false; // contador de cota: só transação server-side
+    }
+
+    match /installments/{installmentId} {
+      allow read: if canReadFinance();
+      allow write: if false; // somente api/commercial/register-payment.ts
+    }
+
+    match /installments/{installmentId}/payments/{paymentId} {
+      allow read: if canReadFinance();
+      allow write: if false;
+    }
+
+    match /client_ads/{clientAdId} {
+      allow read: if canReadAds();
+      allow write: if false; // somente api/commercial/assign-ad.ts (valida cota)
+    }
+
+    match /financial_summaries/{period} {
+      allow read: if canReadFinance();
+      allow write: if false;
+    }
+
+    // Trilha de auditoria: leitura restrita e escrita exclusiva do servidor,
+    // para o histórico não poder ser alterado por quem executou a ação.
+    match /activity_logs/{logId} {
+      allow read: if hasRole(['admin', 'gerente']);
+      allow write: if false;
+    }
+
+    // Formulário público de /anuncie. Um lead nunca vira cliente ou contrato
+    // automaticamente — a conversão é feita pela equipe.
+    match /sales_leads/{leadId} {
+      allow read: if canReadCommercial();
+      allow create: if isValidSalesLead(request.resource.data);
+      allow update: if canWriteClients();
+      allow delete: if isAdmin();
     }
 
     match /test/connection {

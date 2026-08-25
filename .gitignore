@@ -6,3 +6,8 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# Chaves de service account do Firebase Admin (nunca versionar)
+*serviceAccount*.json
+*service-account*.json
+*-firebase-adminsdk-*.json

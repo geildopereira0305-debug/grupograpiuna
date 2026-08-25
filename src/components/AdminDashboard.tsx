@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useAuth } from '../hooks/useAuth';
 import { loginWithGoogle, logout } from '../firebase';
-import { LayoutDashboard, Newspaper, Tv, Image as ImageIcon, LogOut, LogIn, ChevronRight, Briefcase, Mic, Youtube, BarChart3, Smartphone, ShoppingBag, Radio } from 'lucide-react';
+import { Handshake, LayoutDashboard, Newspaper, Tv, Image as ImageIcon, LogOut, LogIn, ChevronRight, Briefcase, Mic, Youtube, BarChart3, Smartphone, ShoppingBag, Radio, Package as PackageIcon, Users as UsersIcon } from 'lucide-react';
 import { AdminNews } from './AdminNews';
 import { AdminSchedule } from './AdminSchedule';
 import { AdminAds } from './AdminAds';
@@ -12,10 +12,31 @@ import { AdminAnalytics } from './AdminAnalytics';
 import { AdminStories } from './AdminStories';
 import { AdminShop } from './AdminShop';
 import { AdminLiveChannels } from './AdminLiveChannels';
+import { AdminPackages } from './AdminPackages';
+import { AdminClients } from './AdminClients';
+import { AdminContracts } from './AdminContracts';
+import type { ClientDocument, WithId } from '../lib/commercial-types';
+
+/**
+ * Papéis com acesso ao painel. Inclui os papéis comerciais introduzidos pelo
+ * módulo comercial — sem isso, gerente/comercial/financeiro cairiam na tela de
+ * "Acesso Negado". A autorização fina de cada operação fica nas Firestore Rules
+ * e nas rotas de api/; esconder o menu não protege o banco.
+ */
+const PANEL_ROLES = [
+  'admin',
+  'editor',
+  'gerente',
+  'comercial',
+  'financeiro',
+  'operador_anuncios',
+  'visualizacao',
+];
 
 export const AdminDashboard = () => {
   const { user, role, loading, isAdmin } = useAuth();
-  const [activeTab, setActiveTab] = useState<'analytics' | 'news' | 'schedule' | 'channels' | 'ads' | 'hub73' | 'podcasts' | 'videos' | 'stories' | 'shop'>('analytics');
+  const [contractClient, setContractClient] = useState<WithId<ClientDocument> | null>(null);
+  const [activeTab, setActiveTab] = useState<'analytics' | 'packages' | 'clients' | 'contracts' | 'news' | 'schedule' | 'channels' | 'ads' | 'hub73' | 'podcasts' | 'videos' | 'stories' | 'shop'>('analytics');
 
   if (loading) {
     return (
@@ -45,7 +66,7 @@ export const AdminDashboard = () => {
     );
   }
 
-  if (role !== 'admin' && role !== 'editor') {
+  if (!role || !PANEL_ROLES.includes(role)) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50 px-4">
         <div className="max-w-md w-full bg-white p-8 rounded-3xl shadow-xl border border-gray-100 text-center">
@@ -69,6 +90,9 @@ export const AdminDashboard = () => {
         <nav className="flex-1 space-y-2">
           {[
             { id: 'analytics', label: 'Audiência', icon: BarChart3 },
+            { id: 'packages', label: 'Pacotes', icon: PackageIcon },
+            { id: 'clients', label: 'Clientes', icon: UsersIcon },
+            { id: 'contracts', label: 'Contratos', icon: Handshake },
             { id: 'news', label: 'Notícias', icon: Newspaper },
             { id: 'schedule', label: 'TV Grade', icon: Tv },
             { id: 'channels', label: 'Canais TV', icon: Radio },
@@ -118,6 +142,18 @@ export const AdminDashboard = () => {
       <main className="flex-1 p-6 md:p-12 overflow-y-auto">
         <div className="max-w-5xl mx-auto">
           {activeTab === 'analytics' && <AdminAnalytics />}
+          {activeTab === 'packages' && <AdminPackages />}
+          {activeTab === 'clients' && (
+            <AdminClients
+              onStartContract={(client) => { setContractClient(client); setActiveTab('contracts'); }}
+            />
+          )}
+          {activeTab === 'contracts' && (
+            <AdminContracts
+              initialClient={contractClient}
+              onConsumeInitialClient={() => setContractClient(null)}
+            />
+          )}
           {activeTab === 'news' && <AdminNews />}
           {activeTab === 'schedule' && <AdminSchedule />}
           {activeTab === 'channels' && <AdminLiveChannels />}

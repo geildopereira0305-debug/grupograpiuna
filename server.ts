@@ -3,6 +3,7 @@ import { createServer as createViteServer } from "vite";
 import path from "path";
 import { fileURLToPath } from "url";
 import dotenv from "dotenv";
+import closeContractHandler from "./api/commercial/close-contract";
 
 dotenv.config({ path: ".env.local" });
 dotenv.config();
@@ -19,7 +20,12 @@ const __dirname = path.dirname(__filename);
 
 async function startServer() {
   const app = express();
+  // Necessario para as rotas comerciais lerem o corpo JSON
+  app.use(express.json());
   const PORT = 3000;
+
+  // Espelha api/commercial/close-contract.ts (transacional; exige Firebase Admin)
+  app.post("/api/commercial/close-contract", (req, res) => closeContractHandler(req, res));
 
   // API routes
   app.get("/api/health", (req, res) => {
