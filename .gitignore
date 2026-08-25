@@ -11,3 +11,6 @@ coverage/
 *serviceAccount*.json
 *service-account*.json
 *-firebase-adminsdk-*.json
+
+# Saida temporaria da simulacao de build da Vercel
+.repro/

@@ -1,48 +1,333 @@
 /**
  * Vercel Serverless Function — POST /api/commercial/close-contract
  *
- * Fecha um contrato numa única transação atômica: contrato + parcelas +
- * contadores de cota + auditoria. Ou tudo é gravado, ou nada é.
+ * ┌─ POR QUE ESTE ARQUIVO É AUTOCONTIDO ─────────────────────────────────────┐
+ * │ O projeto declara "type": "module". A Vercel transpila cada rota de api/  │
+ * │ para ESM SEM empacotar, e o Node ESM não resolve import relativo sem      │
+ * │ extensão — além disso, arquivos fora de api/ (como src/lib/) nem chegam   │
+ * │ à lambda. Qualquer `import './x'` aqui quebra em produção com             │
+ * │ ERR_MODULE_NOT_FOUND, como já ocorreu.                                    │
+ * │                                                                           │
+ * │ Import de node_modules (zod, firebase-admin) funciona normalmente — só o  │
+ * │ relativo é proibido. Por isso a lógica compartilhada está duplicada aqui. │
+ * │                                                                           │
+ * │ Para a duplicação da matemática financeira não divergir em silêncio, o    │
+ * │ teste de paridade em scripts/parity-close-contract.ts compara estas       │
+ * │ funções com src/lib/installment-dates.ts. Alterou uma? Rode o teste.      │
+ * └───────────────────────────────────────────────────────────────────────────┘
  *
- * Por que o fechamento NÃO acontece no React (seção 6 do guia):
- *  - o preço vem do documento do pacote lido AQUI, nunca do navegador;
- *  - o packageSnapshot precisa ser tirado no servidor, no instante da venda;
- *  - parcelas e cotas dependem de consistência entre vários documentos.
- *
- * Idempotência: a chave recebida vira um documento em commercial_requests.
- * Como ele é criado dentro da mesma transação, um clique duplo ou um F5 durante
- * a resposta devolve o contrato já criado em vez de duplicá-lo.
+ * Fecha o contrato numa única transação: contrato + parcelas + cotas +
+ * auditoria. O preço vem do documento do pacote lido AQUI, nunca do navegador,
+ * e o packageSnapshot é tirado no servidor, no instante da venda.
  */
-import { FieldValue, getAdminDb, Timestamp } from '../_lib/firebase-admin';
-import { requireAuth } from '../_lib/require-auth';
+import { cert, getApps, initializeApp, type App } from 'firebase-admin/app';
+import { getAuth, type Auth } from 'firebase-admin/auth';
 import {
-  badRequest, conflict, created, methodNotAllowed, notFound, parseBody, serverError,
-} from '../_lib/http';
-import { closeContractSchema, formatZodErrors } from '../../src/lib/commercial-validation';
-import {
-  buildInstallmentPlan, computeContractPeriod, todayBusinessDate,
-} from '../../src/lib/installment-dates';
-import {
-  AD_FORMATS, type AdFormat, type AdLimits, type PackageDuration,
-} from '../../src/lib/commercial-types';
+  FieldValue, getFirestore, Timestamp, type Firestore,
+} from 'firebase-admin/firestore';
+import { z } from 'zod';
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   1. Firebase Admin
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * Instância NÃO PADRÃO do Firestore, a mesma de src/firebase.ts. Sem o
+ * databaseId o Admin SDK conversaria com o banco "(default)", que está vazio.
+ */
+const DEFAULT_DATABASE_ID = 'ai-studio-0154e963-dfef-44b7-90a1-038646e49104';
+const APP_NAME = 'grupograpiuna-admin';
+
+let cachedApp: App | null = null;
+let cachedDb: Firestore | null = null;
+let cachedAuth: Auth | null = null;
+
+/** A chave privada chega com \n escapados; sem desfazer isso o SDK a rejeita. */
+function normalizePrivateKey(raw: string): string {
+  return raw.replace(/^["']|["']$/g, '').replace(/\\n/g, '\n').trim();
+}
+
+/**
+ * Inicialização PREGUIÇOSA: fazê-la no topo do módulo faria a função falhar já
+ * na importação quando faltasse uma variável, devolvendo FUNCTION_INVOCATION_FAILED
+ * em vez de um erro tratável.
+ */
+function getAdminApp(): App {
+  if (cachedApp) return cachedApp;
+
+  const projectId = process.env.FIREBASE_PROJECT_ID;
+  const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
+  const privateKeyRaw = process.env.FIREBASE_PRIVATE_KEY;
+
+  const missing = [
+    !projectId && 'FIREBASE_PROJECT_ID',
+    !clientEmail && 'FIREBASE_CLIENT_EMAIL',
+    !privateKeyRaw && 'FIREBASE_PRIVATE_KEY',
+  ].filter(Boolean);
+  if (missing.length > 0) {
+    throw new Error(`Credenciais do Firebase Admin ausentes: ${missing.join(', ')}`);
+  }
+
+  const existing = getApps().find((a) => a.name === APP_NAME);
+  cachedApp =
+    existing ??
+    initializeApp(
+      {
+        credential: cert({
+          projectId,
+          clientEmail,
+          privateKey: normalizePrivateKey(privateKeyRaw as string),
+        }),
+        projectId,
+      },
+      APP_NAME,
+    );
+  return cachedApp;
+}
+
+function getAdminDb(): Firestore {
+  if (cachedDb) return cachedDb;
+  cachedDb = getFirestore(
+    getAdminApp(),
+    process.env.FIREBASE_DATABASE_ID || DEFAULT_DATABASE_ID,
+  );
+  return cachedDb;
+}
+
+function getAdminAuth(): Auth {
+  if (cachedAuth) return cachedAuth;
+  cachedAuth = getAuth(getAdminApp());
+  return cachedAuth;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   2. Autenticação e papéis
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * Papéis que podem criar contrato — recorte de 'contracts.create' na matriz de
+ * src/lib/permissions.ts (fonte canônica). 'editor' é o legado do portal, que
+ * vale como 'gerente' durante a migração.
+ */
+const ROLES_CAN_CREATE_CONTRACT = ['admin', 'gerente', 'comercial', 'editor'];
+
+interface AuthenticatedUser {
+  uid: string;
+  email: string;
+  role: string;
+}
+
+/**
+ * Valida o ID token e resolve o papel em users/{uid}.
+ *
+ * Indispensável: o Admin SDK IGNORA as Security Rules, então sem esta checagem
+ * qualquer pessoa que descobrisse a URL poderia fechar contratos.
+ */
+async function verifyRequestUser(
+  authorizationHeader: string | undefined,
+): Promise<AuthenticatedUser | null> {
+  const token = authorizationHeader?.replace(/^Bearer\s+/i, '').trim();
+  if (!token) return null;
+  try {
+    const decoded = await getAdminAuth().verifyIdToken(token);
+    const snap = await getAdminDb().collection('users').doc(decoded.uid).get();
+    return {
+      uid: decoded.uid,
+      email: decoded.email ?? '',
+      role: (snap.exists ? (snap.data()?.role as string) : undefined) ?? 'user',
+    };
+  } catch {
+    return null;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   3. Respostas HTTP — operação comercial nunca pode ser cacheada
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+function sendJson(res: any, status: number, body: unknown): void {
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-store, max-age=0');
+  res.status(status).json(body);
+}
+
+/** Na Vercel o JSON já vem parseado; no Express local pode chegar como string. */
+function parseBody(req: any): Record<string, unknown> {
+  const body = req?.body;
+  if (!body) return {};
+  if (typeof body === 'string') {
+    try { return JSON.parse(body); } catch { return {}; }
+  }
+  return body as Record<string, unknown>;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   4. Calendário e rateio (espelha src/lib/installment-dates.ts)
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+export const BUSINESS_TIME_ZONE = 'America/Bahia';
+
+const pad = (n: number): string => String(n).padStart(2, '0');
+const parseDateParts = (date: string) => {
+  const [y, m, d] = date.split('-').map(Number);
+  return { y, m, d };
+};
+const formatDateParts = (y: number, m: number, d: number): string =>
+  `${y}-${pad(m)}-${pad(d)}`;
+
+export function lastDayOfMonth(year: number, month: number): number {
+  return new Date(Date.UTC(year, month, 0)).getUTCDate();
+}
+
+export function todayBusinessDate(timeZone: string = BUSINESS_TIME_ZONE): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone, year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(new Date());
+}
+
+/**
+ * Soma meses preservando o dia, recortando no último dia do mês de destino.
+ * 2026-01-31 + 1 mês = 2026-02-28; +2 meses volta a 2026-03-31, porque o
+ * cálculo parte sempre da data original e nunca encadeia o recorte.
+ */
+export function addMonthsClamped(date: string, months: number): string {
+  const { y, m, d } = parseDateParts(date);
+  const totalMonths = y * 12 + (m - 1) + months;
+  const ny = Math.floor(totalMonths / 12);
+  const nm = ((totalMonths % 12) + 12) % 12 + 1;
+  return formatDateParts(ny, nm, Math.min(d, lastDayOfMonth(ny, nm)));
+}
+
+export function addDays(date: string, days: number): string {
+  const { y, m, d } = parseDateParts(date);
+  const dt = new Date(Date.UTC(y, m - 1, d + days));
+  return formatDateParts(dt.getUTCFullYear(), dt.getUTCMonth() + 1, dt.getUTCDate());
+}
+
+export function computeContractPeriod(
+  startDate: string,
+  durationMonths: number,
+): { startDate: string; endDate: string } {
+  return {
+    startDate,
+    endDate: addDays(addMonthsClamped(startDate, durationMonths), -1),
+  };
+}
+
+/** Rateio cuja soma é EXATAMENTE o total; os centavos restantes vão às primeiras. */
+export function splitInstallments(totalCents: number, count: number): number[] {
+  if (count <= 0) return [];
+  const safeTotal = Math.max(0, Math.round(totalCents));
+  const base = Math.floor(safeTotal / count);
+  const remainder = safeTotal - base * count;
+  return Array.from({ length: count }, (_, i) => base + (i < remainder ? 1 : 0));
+}
+
+export interface PlannedInstallment {
+  number: number;
+  dueDate: string;
+  amountCents: number;
+}
+
+export function buildInstallmentPlan(
+  totalCents: number,
+  count: number,
+  firstDueDate: string,
+): PlannedInstallment[] {
+  const amounts = splitInstallments(totalCents, count);
+  return amounts.map((amountCents, i) => ({
+    number: i + 1,
+    dueDate: addMonthsClamped(firstDueDate, i),
+    amountCents,
+  }));
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   5. Validação (espelha closeContractSchema de src/lib/commercial-validation.ts)
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+const AD_FORMATS = ['cover', 'leaderboard', 'intermediario', 'sidebar', 'mobile'] as const;
+type AdFormat = (typeof AD_FORMATS)[number];
+
+const businessDateSchema = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, 'Use o formato AAAA-MM-DD')
+  .refine((value) => {
+    const { y, m, d } = parseDateParts(value);
+    if (m < 1 || m > 12 || d < 1) return false;
+    return d <= lastDayOfMonth(y, m);
+  }, 'Data inexistente no calendário');
+
+export const closeContractSchema = z
+  .object({
+    clientId: z.string().trim().min(1, 'Selecione o cliente'),
+    packageId: z.string().trim().min(1, 'Selecione o pacote'),
+    durationMonths: z.union([z.literal(1), z.literal(3), z.literal(6), z.literal(12)]),
+    installmentCount: z.number().int().min(1, 'Mínimo de 1 parcela').max(12, 'Máximo de 12 parcelas'),
+    firstDueDate: businessDateSchema,
+    startDate: businessDateSchema.optional(),
+    paymentMethod: z.enum(['pix', 'boleto', 'cartao', 'dinheiro', 'transferencia', 'outro']),
+    sellerId: z.string().trim().min(1, 'Informe o vendedor'),
+    discountCents: z.number().int().nonnegative().default(0),
+    discountReason: z.string().trim().max(300).default(''),
+    idempotencyKey: z.string().trim().min(8, 'Chave de idempotência inválida').max(120),
+  })
+  .refine((c) => c.discountCents === 0 || c.discountReason.trim().length >= 3, {
+    message: 'Informe o motivo do desconto',
+    path: ['discountReason'],
+  });
+
+function formatZodErrors(error: z.ZodError): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const issue of error.issues) {
+    const key = issue.path.join('.') || '_';
+    if (!(key in result)) result[key] = issue.message;
+  }
+  return result;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   6. Handler
+   ═══════════════════════════════════════════════════════════════════════════ */
 
 /** Coleção server-only: nenhuma regra a libera, então o cliente não a alcança. */
 const REQUESTS = 'commercial_requests';
 
 export default async function handler(req: any, res: any) {
   if (req.method !== 'POST') {
-    methodNotAllowed(res, ['POST']);
+    res.setHeader('Allow', 'POST');
+    sendJson(res, 405, { error: 'Método não permitido. Use POST.' });
     return;
   }
 
   // 1. Token e papel — antes de qualquer leitura ou gravação
-  const user = await requireAuth(req, res, 'contracts.create');
-  if (!user) return;
+  let user: AuthenticatedUser | null;
+  try {
+    user = await verifyRequestUser(req?.headers?.authorization);
+  } catch (err) {
+    console.error('[close-contract] falha ao verificar token:', err);
+    sendJson(res, 500, { error: 'Erro interno ao validar a sessão', code: 'internal' });
+    return;
+  }
 
-  // Payload validado com o mesmo schema usado no wizard
+  if (!user) {
+    sendJson(res, 401, { error: 'Faça login novamente para continuar', code: 'unauthenticated' });
+    return;
+  }
+  if (!ROLES_CAN_CREATE_CONTRACT.includes(user.role)) {
+    sendJson(res, 403, {
+      error: `Seu perfil (${user.role}) não pode fechar contratos`,
+      code: 'forbidden',
+    });
+    return;
+  }
+
   const parsed = closeContractSchema.safeParse(parseBody(req));
   if (!parsed.success) {
-    badRequest(res, 'Dados do contrato inválidos', formatZodErrors(parsed.error));
+    sendJson(res, 400, {
+      error: 'Dados do contrato inválidos',
+      fields: formatZodErrors(parsed.error),
+    });
     return;
   }
   const input = parsed.data;
@@ -55,8 +340,7 @@ export default async function handler(req: any, res: any) {
       const clientRef = db.collection('clients').doc(input.clientId);
       const packageRef = db.collection('packages').doc(input.packageId);
 
-      // ── TODAS as leituras primeiro: o Firestore exige leituras antes de
-      //    escritas dentro de uma transação.
+      // TODAS as leituras primeiro — exigência do Firestore em transações
       const [requestSnap, clientSnap, packageSnap, benefitsSnap, contentsSnap] =
         await Promise.all([
           tx.get(requestRef),
@@ -66,24 +350,20 @@ export default async function handler(req: any, res: any) {
           tx.get(packageRef.collection('contents').orderBy('order', 'asc')),
         ]);
 
-      // Chave já usada: devolve o contrato original, sem criar outro
+      // Chave já usada: devolve o contrato original em vez de criar outro
       if (requestSnap.exists) {
-        return {
-          duplicated: true as const,
-          contractId: requestSnap.data()?.contractId as string,
-        };
+        return { duplicated: true as const, contractId: requestSnap.data()?.contractId as string };
       }
 
-      // 2. Cliente precisa existir e estar ativo
+      // 2. Cliente existe e está ativo
       if (!clientSnap.exists) {
         return { failure: { status: 404, message: 'Cliente não encontrado' } };
       }
-      const client = clientSnap.data() ?? {};
-      if (client.status !== 'active') {
+      if ((clientSnap.data() ?? {}).status !== 'active') {
         return { failure: { status: 400, message: 'Cliente inativo não pode fechar contrato' } };
       }
 
-      // 3. Pacote precisa existir, estar ativo e ter preço para a duração
+      // 3. Pacote existe, está ativo e tem preço para a duração
       if (!packageSnap.exists) {
         return { failure: { status: 404, message: 'Pacote não encontrado' } };
       }
@@ -92,7 +372,7 @@ export default async function handler(req: any, res: any) {
         return { failure: { status: 400, message: 'Pacote inativo não pode ser vendido' } };
       }
 
-      const duration = input.durationMonths as PackageDuration;
+      const duration = input.durationMonths;
       const subtotalCents = Number(pkg.prices?.[duration] ?? 0);
       if (!Number.isFinite(subtotalCents) || subtotalCents <= 0) {
         return {
@@ -103,7 +383,7 @@ export default async function handler(req: any, res: any) {
         };
       }
 
-      // 5. Totais — o desconto nunca pode zerar ou inverter o contrato
+      // 5. Totais — desconto nunca zera nem inverte o contrato
       const discountCents = Math.max(0, Math.round(input.discountCents ?? 0));
       if (discountCents >= subtotalCents) {
         return {
@@ -112,12 +392,11 @@ export default async function handler(req: any, res: any) {
       }
       const totalCents = subtotalCents - discountCents;
 
-      // 4. Snapshot: retrato do pacote NO MOMENTO da venda. Alterações futuras
-      //    no catálogo não podem mudar retroativamente o que já foi vendido.
+      // 4. Snapshot: retrato do pacote NO MOMENTO da venda
       const adLimits = AD_FORMATS.reduce((acc, format) => {
         acc[format] = Math.max(0, Math.floor(Number(pkg.adLimits?.[format] ?? 0)));
         return acc;
-      }, {} as AdLimits);
+      }, {} as Record<AdFormat, number>);
 
       const packageSnapshot = {
         name: String(pkg.name ?? ''),
@@ -138,7 +417,7 @@ export default async function handler(req: any, res: any) {
         adLimits,
       };
 
-      // 6. Calendário — função testada, que trata o último dia do mês
+      // 6. Calendário com tratamento de fim de mês
       const startDate = input.startDate ?? todayBusinessDate();
       const period = computeContractPeriod(startDate, duration);
       const plan = buildInstallmentPlan(totalCents, input.installmentCount, input.firstDueDate);
@@ -167,11 +446,11 @@ export default async function handler(req: any, res: any) {
         idempotencyKey: input.idempotencyKey,
         createdAt: now,
         updatedAt: now,
-        createdBy: user.uid,
-        updatedBy: user.uid,
+        createdBy: user!.uid,
+        updatedBy: user!.uid,
       });
 
-      // 8. Parcelas (1 a 12), todas pendentes
+      // 8. Parcelas, todas pendentes
       for (const installment of plan) {
         tx.set(db.collection('installments').doc(), {
           contractId: contractRef.id,
@@ -187,8 +466,8 @@ export default async function handler(req: any, res: any) {
         });
       }
 
-      // 9. Contadores de cota, um documento por formato
-      for (const format of AD_FORMATS as readonly AdFormat[]) {
+      // 9. Contadores de cota, um por formato
+      for (const format of AD_FORMATS) {
         tx.set(contractRef.collection('adUsage').doc(format), {
           format,
           limit: adLimits[format],
@@ -200,8 +479,8 @@ export default async function handler(req: any, res: any) {
       // 10. Auditoria
       tx.set(db.collection('activity_logs').doc(), {
         action: 'contract.create',
-        userId: user.uid,
-        userEmail: user.email,
+        userId: user!.uid,
+        userEmail: user!.email,
         targets: {
           contractId: contractRef.id,
           clientId: input.clientId,
@@ -219,12 +498,12 @@ export default async function handler(req: any, res: any) {
         createdAt: now,
       });
 
-      // Marca a chave como processada — dentro da transação, para que duas
+      // Marca a chave como processada DENTRO da transação, para que duas
       // requisições simultâneas nunca criem dois contratos.
       tx.set(requestRef, {
         contractId: contractRef.id,
         operation: 'close-contract',
-        userId: user.uid,
+        userId: user!.uid,
         createdAt: FieldValue.serverTimestamp(),
       });
 
@@ -239,19 +518,21 @@ export default async function handler(req: any, res: any) {
     });
 
     if ('failure' in result && result.failure) {
-      const { status, message } = result.failure;
-      if (status === 404) notFound(res, message);
-      else badRequest(res, message);
+      sendJson(res, result.failure.status, { error: result.failure.message });
       return;
     }
-
     if ('duplicated' in result && result.duplicated) {
-      conflict(res, 'Este contrato já foi fechado', { contractId: result.contractId });
+      sendJson(res, 409, {
+        error: 'Este contrato já foi fechado',
+        code: 'conflict',
+        contractId: result.contractId,
+      });
       return;
     }
 
-    created(res, { ok: true, ...result });
+    sendJson(res, 201, { ok: true, ...result });
   } catch (err) {
-    serverError(res, err);
+    console.error('[close-contract] erro interno:', err);
+    sendJson(res, 500, { error: 'Erro interno ao processar a operação', code: 'internal' });
   }
 }
