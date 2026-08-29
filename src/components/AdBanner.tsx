@@ -44,7 +44,6 @@ export const AdBanner = ({ size, page, className, index }: AdBannerProps) => {
     leaderboard:  'w-full max-w-[970px] h-[90px]',
     intermediario:'w-full max-w-[728px] h-[90px]',
     sidebar:      'w-[300px] h-[250px]',
-    mobile:       'w-full max-w-[320px] h-[50px]',
     cover:        'w-full max-w-[1600px] aspect-[16/5] sm:aspect-[5/1] rounded-2xl shadow-2xl shadow-black/40 ring-1 ring-white/5',
   };
 
